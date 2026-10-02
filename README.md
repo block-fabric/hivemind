@@ -1,10 +1,10 @@
-Sidechain template
-==================
+Hivemind
+========
 
-A sidechain of the Chains mainchain with nothing in it but what every sidechain
-needs: blind merged mining, deposits from the mainchain and withdrawals to it.
-Copy it to make a sidechain. See [doc/sidechain.md](doc/sidechain.md) for how it
-works, how to try it, and how to make your own.
+Hivemind is a sidechain of the Chains mainchain for prediction markets. This
+tree is the [sidechain template](doc/sidechain.md) with the identity of
+Hivemind. The markets are not ported yet: see [doc/hivemind.md](doc/hivemind.md)
+for the state of the old code and the plan.
 
 It is derived from the Chains mainchain, which is derived from Bitcoin Core;
 the rest of this file is from there.
