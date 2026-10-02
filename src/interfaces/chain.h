@@ -8,6 +8,7 @@
 #include <blockfilter.h>
 #include <common/settings.h>
 #include <consensus/amount.h>
+#include <consensus/params.h>
 #include <kernel/chain.h> // IWYU pragma: export
 #include <primitives/transaction.h>
 #include <util/expected.h>
@@ -205,6 +206,13 @@ public:
     //! node tells it. Fails if this chain is not a sidechain, if the mainchain
     //! node cannot be asked, or if it does not know the address.
     virtual util::Result<CScript> getMainchainScript(const std::string& address) = 0;
+
+    //! What a trade in a prediction market costs now, fee included (negative
+    //! when it pays); nothing if the trade cannot be made.
+    virtual std::optional<CAmount> quoteMarketTrade(const uint256& market, uint8_t state, int64_t shares) = 0;
+
+    //! The parameters of the prediction markets of this chain.
+    virtual Consensus::HivemindParams getHivemindParams() = 0;
 
     //! Check if transaction has descendants in mempool.
     virtual bool hasDescendantsInMempool(const Txid& txid) = 0;

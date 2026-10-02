@@ -205,7 +205,7 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock()
         sidechain::StateUndo undo;
         std::string reject_reason;
         // The block is built for the next mainchain block to commit to.
-        if (!side.ApplyMainEvents(mainchain.Height(), mainchain, nHeight, undo, side_outputs, reject_reason)) {
+        if (!side.ApplyMainEvents(mainchain.Height(), mainchain, nHeight, side_params, undo, side_outputs, reject_reason)) {
             throw std::runtime_error(strprintf("%s: the block does not fit the mainchain on record (%s)", __func__, reject_reason));
         }
         std::optional<uint256> bundle_hash;

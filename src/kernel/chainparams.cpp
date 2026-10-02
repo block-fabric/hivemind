@@ -236,6 +236,11 @@ public:
         // Hivemind is a sidechain of the Chains mainchain, in slot 9.
         MakeSidechain({.slot = 9, .genesis_message = "Hivemind: markets on what will happen, settled by those who report it", .genesis_time = 1790900000,
                        .message_start = {0x68, 0x76, 0x6d, 0x01}, .default_port = 9855, .bech32_hrp = "hm"});
+        // The markets. One day of mainchain time per voting period.
+        consensus.sidechain.hivemind.start_time = 1790900000;
+        // TODO before launch: the hash of the key that holds the reputation at the start. Until it
+        // is set nobody can vote on this network.
+        consensus.sidechain.hivemind.genesis_account = uint160{};
         consensus.coinbase_maturity = 6; // deposits and fees can be spent after six blocks
     }
 };
@@ -335,6 +340,8 @@ public:
         // Hivemind on the Chains testnet, in slot 9.
         MakeSidechain({.slot = 9, .genesis_message = "Hivemind testnet", .genesis_time = 1790900000,
                        .message_start = {0x68, 0x76, 0x6d, 0x02}, .default_port = 19855, .bech32_hrp = "thm"});
+        consensus.sidechain.hivemind.start_time = 1790900000;
+        consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("b8d111d9b7f7e29ec30b67f26c5922afa5b2d744");
         consensus.coinbase_maturity = 6;
     }
 };
@@ -443,6 +450,8 @@ public:
         // Hivemind on the Chains signet, in slot 9. Its own blocks are not signed.
         MakeSidechain({.slot = 9, .genesis_message = "Hivemind signet", .genesis_time = 1790900000,
                        .message_start = {0x68, 0x76, 0x6d, 0x03}, .default_port = 39855, .bech32_hrp = "thm"});
+        consensus.sidechain.hivemind.start_time = 1790900000;
+        consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("864b263d30715ac8e9fbda1147d556a768b5a1b4");
         consensus.coinbase_maturity = 6;
     }
 };
@@ -505,6 +514,10 @@ public:
             // A sidechain has no sidechains of its own.
             consensus.drivechain.max_sidechains = 0;
             consensus.coinbase_maturity = 2;
+            // Markets with periods of a few blocks: four to seal votes, two to reveal them.
+            consensus.sidechain.hivemind.period_blocks = 6;
+            consensus.sidechain.hivemind.max_rolls = 1;
+            consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("c22f79ea0ef7374ef0cc03ce91f791063a5e2032");
         }
         m_assumed_blockchain_size = 0;
         m_assumed_chain_state_size = 0;

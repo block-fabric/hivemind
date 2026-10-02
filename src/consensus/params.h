@@ -84,6 +84,41 @@ struct BIP9Deployment {
     static constexpr int64_t NEVER_ACTIVE = -2;
 };
 
+/** Parameters of the prediction markets. */
+struct HivemindParams {
+    /** Length of a voting period in seconds of mainchain time. */
+    int64_t period_seconds{86400};
+    /** If positive, a voting period is this many blocks instead; for tests. */
+    int period_blocks{0};
+    /** Mainchain time at which the first period starts. */
+    int64_t start_time{0};
+    /** Most periods a decision can be voted on for. */
+    uint16_t max_vote_periods{90};
+    /** How many periods ahead of the current one the event of a decision can be. */
+    uint32_t max_periods_ahead{365};
+    /** How often a decision whose answer was not known is voted again before it is settled as a tie. */
+    uint8_t max_rolls{3};
+    /** What listing a decision costs, in the smallest unit; it goes to those who vote on it. */
+    int64_t listing_fee{100000};
+    /** The share of a voter's reputation that a vote puts at stake: alpha_num / alpha_den. */
+    int64_t alpha_num{1};
+    int64_t alpha_den{10};
+    /** Width of the band around a half in which a yes or no decision is a tie, in 1/100000000. */
+    int64_t tolerance{20000000};
+    /** Most decisions a market can be about; it has two states per decision. */
+    uint32_t max_market_decisions{4};
+    /** Smallest liquidity of a market, in the smallest unit. */
+    int64_t min_liquidity{1000000};
+    /** Largest trading fee of a market, in hundredths of a percent. */
+    uint16_t max_fee_bps{1000};
+    /** Longest text of a decision or of a market, in bytes. */
+    uint32_t max_text_size{400};
+    /** Hash of the key that holds all the reputation (votecoin) when the chain starts. */
+    uint160 genesis_account;
+    /** The reputation there is, in units of 1/100000000 votecoin. */
+    int64_t reputation_supply{100 * int64_t{100000000}};
+};
+
 /**
  * Parameters of a chain that is a sidechain of the mainchain: its blocks are
  * blind merged mined, and its coins come from and return to the mainchain.
@@ -99,6 +134,7 @@ struct SidechainParams {
     uint32_t max_bundle_withdrawals{1000};
     /** Number of blocks to wait after a withdrawal bundle failed before the next one can be made. */
     int bundle_retry_delay{144};
+    HivemindParams hivemind;
 };
 
 /**

@@ -1,69 +1,125 @@
-# Hivemind on the sidechain template: state and plan
+# Hivemind: prediction markets
 
-This tree is the sidechain template with the identity of Hivemind (slot 9 of
-the Chains mainchain). It works as a sidechain: merged mining, deposits,
-withdrawals. **The prediction markets are not in it yet.** This file records
-what the old Hivemind code does, what is wrong with it, and what porting the
-markets means, so that the work can be planned.
+Hivemind is the [sidechain template](sidechain.md) with prediction markets, after
+Paul Sztorc's Truthcoin paper. The markets are rules of the chain: every node
+checks every trade, every vote and every payout.
 
-## What the old code does
+## How it works
 
-The old code (LayerTwo-Labs/hivemind, Bitcoin Core 0.16) has:
+- A **decision** is a question whose answer will be known: yes or no, or a
+  whole number on a scale. Anyone can list one, for a fee, naming the voting
+  period in which its event falls and for how many periods it is voted on.
+- A **market** is about one to four decisions and has two states per
+  decision. Its author funds a market maker (LMSR) with the most it can lose,
+  `liquidity * ln(states)`. The market maker sells and buys shares of the
+  states at prices that follow demand. A share of a state pays one coin if the
+  state comes true. Trading stops when the vote on the first of its decisions
+  starts.
+- **Reputation** (votecoin) is a fixed supply of 100, held by accounts. An
+  account is a key hash, shown as its P2WPKH address. Reputation can be moved.
+- After the event, holders of reputation **vote**. A vote is sealed first
+  (a commitment), and revealed in the last third of the last period of the
+  vote. A vote that is not revealed, or that does not open its seal, does not
+  count. A holder can also answer that the outcome is *not known yet*.
+- The first block of the next period **resolves** all decisions whose vote
+  ended. Voters are scored against each other across the whole batch: the
+  votes form a matrix, its first principal component is the line along which
+  voters differ most, and those at the end the outcomes do not follow lose a
+  share of their reputation to the others. Who skipped votes loses to those
+  who cast them. Outcomes are the reputation-weighted mean (yes or no, with a
+  tie band around a half) or median (scales) of the votes.
+- If those who answer *not known yet* outweigh those who give an answer, or
+  nobody answers, the decision is voted again for as long as before; after too
+  many times it is settled as a tie.
+- When all decisions of a market are resolved, it **pays**: each share gets
+  the product, over the decisions, of how far each went its way. What the
+  market maker has left goes back to the author of the market.
+- **Fees**: listing fees go to the voters. Trading fees go half to the voters,
+  a quarter to the authors of the decisions, a quarter to the author of the
+  market. Voters are paid in proportion to the reputation they come out with.
 
-- the objects of the markets, carried in transaction outputs: branch,
-  decision, market, trade, sealed vote, reveal vote, steal vote, outcome
-  (`src/primitives/market.{h,cpp}`);
-- an index of those objects in LevelDB (`CMarketTreeDB`);
-- 24 wallet RPC commands that create and list them, and a markets page in
-  the GUI;
-- the market maker (LMSR) and the vote resolution (a singular value
-  decomposition, `src/linalg`), both in floating point.
+## Parameters
 
-## What is wrong with it
+| | Value | Where |
+|---|---|---|
+| Voting period | one day of mainchain time (6 blocks on regtest) | `period_seconds`, `period_blocks` |
+| Reputation at stake per vote (alpha) | 1/10 | `alpha_num`, `alpha_den` |
+| Tie band for yes or no | 0.5 ± 0.1 | `tolerance` |
+| Vote length of a decision | 1 to 90 periods | `max_vote_periods` |
+| Times a decision can be put off | 3 (1 on regtest) | `max_rolls` |
+| Listing fee | 0.001 | `listing_fee` |
+| Decisions per market | 1 to 4 | `max_market_decisions` |
+| Reputation supply | 100, to one account at the start | `reputation_supply`, `genesis_account` |
 
-1. **The markets are not consensus.** Validation only *indexes* the market
-   objects it finds in the outputs of a block. It does not check that a
-   trade pays what the market maker asks, that a vote is cast by someone
-   entitled to, or that an outcome is the one the votes give. The wallet does
-   that arithmetic for its own transactions; nothing stops another wallet
-   from doing it differently. As it is, the chain is a bulletin board for
-   market objects.
-2. **The index is not reverted** when a block is disconnected, so a
-   reorganisation leaves objects of dropped blocks in it.
-3. **Floating point.** The price of a trade and the resolution of the votes
-   are computed with `double`, `log` and `exp`. Different processors,
-   compilers and maths libraries can give results that differ in the last
-   bits, which in consensus code splits the chain. This has to become integer
-   or fixed point arithmetic before any of it is a rule.
-4. **The coinbase amount.** The block reward check allows fees, deposits and
-   refunds. Payouts of resolved markets, which the miner of the outcome block
-   puts in the coinbase, are not counted, so such a block is rejected as
-   `bad-cb-amount`. This is what stopped the Hivemind chain of Skydoge at
-   block 496.
-5. **Votecoin**, the reputation that entitles to vote, is tracked through
-   special addresses and is only loosely tied to the rest.
+All in `Consensus::HivemindParams` (`src/consensus/params.h`), set per network
+in `src/kernel/chainparams.cpp`. **The main network has no genesis account
+yet**; one has to be set before launch, and whoever holds its key decides
+every outcome until the reputation is spread.
 
-## What porting means
+## Design choices
 
-The objects, the RPC commands and the GUI page can be ported as they are;
-that is mechanical. Making the markets *rules of the chain* is new work,
-which the old code never did:
+- **No floating point.** The market maker and the vote are integer arithmetic
+  on fixed point numbers (`src/hivemind/math.cpp`): exp and ln by series with
+  60 fractional bits, the principal component by a fixed number of
+  multiplications, every division with its rounding stated. Trades are rounded
+  against the trader. On top of that, a trade is refused if it would leave the
+  market holding less than its fullest state can pay, so a market can never
+  owe more than it holds.
+- **The direction of the vote** has two ends. The one taken as wrong is the
+  one that changes the outcomes least; if both give the same outcomes, the
+  side with less reputation; if the sides are even, nobody's reputation
+  changes. The result does not depend on any sign convention.
+- **Skipping votes is penalised by reputation, not by head**, so splitting
+  reputation over many accounts gains nothing. (In the reference code of the
+  paper it is by head.)
+- **Shares and reputation are balances of accounts**, not coins. Coins paid to
+  a market are burned by the transaction that pays them; what a market pays is
+  created by the coinbase of the block in which it does, like deposits.
+- **A transaction that is well formed is valid.** If what it asks cannot be
+  done when its block is connected (the price moved, the market closed, the
+  account lacks the shares), nothing happens and the coins burned for it are
+  paid back. Sales, transfers and sealed votes are signed by their account;
+  the signature names the first input of the transaction, so it cannot be
+  replayed.
+- **Reverting a block** restores a copy of the whole market state, kept with
+  the undo data of each block that changed it. Simple; it grows with the
+  markets and wants replacing by a delta before the chain is busy.
 
-1. a market state next to `sidechain::State`, updated and reverted block by
-   block: branches, decisions, markets with their shares, the capital held,
-   votes, reputation;
-2. the market maker in fixed point, with tests that pin its results;
-3. rules for every object: who may create it, what it costs, what it pays;
-4. vote resolution in fixed point, or a simpler deterministic rule;
-5. payouts created by the coinbase, counted like deposits and refunds are.
+## Not in this version
 
-## Decisions to take first
+- **Audits and the miner veto** of the paper: a disputed outcome stands.
+- Several decisions on one axis of a market, and categorical decisions.
+- A tiered, retargeted listing fee: the fee is fixed.
+- Freezing reputation during the reveal: reputation counts where it is when
+  the vote is resolved, and an account that voted and moved its reputation
+  away simply has no weight.
 
-- Whether trades and outcomes are enforced by every node (the list above),
-  or the chain stays a bulletin board as in the old code, with the known
-  weakness.
-- Whether the resolution keeps the SVD scheme of the Hivemind paper, in
-  fixed point, or uses a simpler rule (for example the weighted median of
-  the votes).
-- Whether reputation (votecoin) is a second coin of the chain, or is derived
-  from locked coins.
+## Commands
+
+Node: `gethivemindinfo`, `listdecisions`, `getdecision`, `listmarkets`,
+`getmarket`, `quotetrade`, `listreputation`, `listpositions`.
+
+Wallet: `createdecision`, `createmarket`, `buyshares`, `sellshares`,
+`transfervotecoin`, `sealvote`, `revealvote`.
+
+In `hivemind-qt`: Markets, in the navigation bar.
+
+## Code
+
+| What | Where |
+|---|---|
+| Market maker and vote resolution | `src/hivemind/math.{h,cpp}` |
+| Objects, script formats, rules | `src/hivemind/state.{h,cpp}` |
+| Hook into the sidechain rules | `sidechain::State` (`ApplyMainEvents`, `ApplyTx`) |
+| Commands | `src/rpc/hivemind.cpp`, `src/wallet/rpc/hivemind.cpp` |
+| GUI | `src/qt/marketsdialog.{h,cpp}` |
+| Tests | `src/test/hivemind_tests.cpp`, `test/functional/feature_hivemind.py` |
+
+## What the references do differently
+
+The paper and its R code, the LayerTwo-Labs implementation in Rust and the
+Skydoge build were read for this; notes are in `refs/` next to the source
+trees. In short: all of them compute in floating point; the Rust
+implementation has no sealed votes and keeps periods of a day; Skydoge fixed
+the payout bound, the seal, and charging the quoted price, which this
+implementation has from the start.

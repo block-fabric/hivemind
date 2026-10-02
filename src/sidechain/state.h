@@ -7,6 +7,7 @@
 
 #include <consensus/amount.h>
 #include <consensus/params.h>
+#include <hivemind/state.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <script/script.h>
@@ -101,13 +102,16 @@ struct StateUndo {
     std::vector<COutPoint> added;
     //! Withdrawals the block removed, by paying or refunding them.
     std::vector<Withdrawal> removed;
+    //! The state of the markets before the block, if the block changed it.
+    std::optional<hivemind::State> hivemind;
 
     template <typename Stream>
     void Serialize(Stream& s) const
     {
         s << main_height << bundle.has_value();
         if (bundle) s << *bundle;
-        s << last_failure_height << added << removed;
+        s << last_failure_height << added << removed << hivemind.has_value();
+        if (hivemind) s << *hivemind;
     }
     template <typename Stream>
     void Unserialize(Stream& s)
@@ -116,7 +120,10 @@ struct StateUndo {
         s >> main_height >> has_bundle;
         bundle.reset();
         if (has_bundle) s >> bundle.emplace();
-        s >> last_failure_height >> added >> removed;
+        bool has_hivemind;
+        s >> last_failure_height >> added >> removed >> has_hivemind;
+        hivemind.reset();
+        if (has_hivemind) s >> hivemind.emplace();
     }
 };
 
@@ -151,8 +158,8 @@ public:
      * pending bundle, and collect the outputs that pay the deposits.
      * @param[in,out] payouts  outputs the coinbase must have, in order, after its first output
      */
-    [[nodiscard]] bool ApplyMainEvents(int main_height, const Mainchain& mainchain, int height, StateUndo& undo,
-                                       std::vector<CTxOut>& payouts, std::string& reject_reason);
+    [[nodiscard]] bool ApplyMainEvents(int main_height, const Mainchain& mainchain, int height, const Consensus::SidechainParams& params,
+                                       StateUndo& undo, std::vector<CTxOut>& payouts, std::string& reject_reason);
     /** The bundle a block at `height` may commit to: empty if no bundle can be made now. */
     std::optional<CMutableTransaction> NextBundle(int height, const Consensus::SidechainParams& params, std::vector<COutPoint>* withdrawals = nullptr) const;
     /** Make the bundle with the hash `hash` the pending one. */
@@ -172,13 +179,15 @@ public:
     std::optional<CMutableTransaction> BundleTx() const;
     bool InBundle(const COutPoint& withdrawal) const;
     int32_t LastFailureHeight() const { return m_last_failure_height; }
+    /** The prediction markets. */
+    const hivemind::State& Hivemind() const { return m_hivemind; }
 
     template <typename Stream>
     void Serialize(Stream& s) const
     {
         s << m_main_height << m_withdrawals << m_bundle.has_value();
         if (m_bundle) s << *m_bundle;
-        s << m_last_failure_height;
+        s << m_last_failure_height << m_hivemind;
     }
     template <typename Stream>
     void Unserialize(Stream& s)
@@ -187,7 +196,7 @@ public:
         s >> m_main_height >> m_withdrawals >> has_bundle;
         m_bundle.reset();
         if (has_bundle) s >> m_bundle.emplace();
-        s >> m_last_failure_height;
+        s >> m_last_failure_height >> m_hivemind;
     }
     friend bool operator==(const State&, const State&) = default;
 
@@ -200,6 +209,7 @@ private:
     std::optional<PendingBundle> m_bundle;
     //! Height of the block that learned that a bundle failed, -1 if none did.
     int32_t m_last_failure_height{-1};
+    hivemind::State m_hivemind;
 };
 
 //

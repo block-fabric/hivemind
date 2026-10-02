@@ -1,10 +1,10 @@
 Hivemind
 ========
 
-Hivemind is a sidechain of the Chains mainchain for prediction markets. This
-tree is the [sidechain template](doc/sidechain.md) with the identity of
-Hivemind. The markets are not ported yet: see [doc/hivemind.md](doc/hivemind.md)
-for the state of the old code and the plan.
+Hivemind is a sidechain of the Chains mainchain for prediction markets: people
+trade on what will happen, and holders of reputation vote on what did. See
+[doc/hivemind.md](doc/hivemind.md) for how the markets work and
+[doc/sidechain.md](doc/sidechain.md) for the sidechain underneath.
 
 It is derived from the Chains mainchain, which is derived from Bitcoin Core;
 the rest of this file is from there.

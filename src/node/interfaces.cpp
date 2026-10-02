@@ -680,6 +680,12 @@ public:
             return util::Error{Untranslated(e.what())};
         }
     }
+    Consensus::HivemindParams getHivemindParams() override { return chainman().GetConsensus().sidechain.hivemind; }
+    std::optional<CAmount> quoteMarketTrade(const uint256& market, uint8_t state, int64_t shares) override
+    {
+        LOCK(::cs_main);
+        return chainman().ActiveChainstate().m_scdb.m_side.Hivemind().Quote(market, state, shares);
+    }
     double guessVerificationProgress(const uint256& block_hash) override
     {
         LOCK(chainman().GetMutex());

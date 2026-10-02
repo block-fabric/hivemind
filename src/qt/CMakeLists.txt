@@ -125,6 +125,8 @@ add_library(bitcoinqt STATIC EXCLUDE_FROM_ALL
   cryptotoolsdialog.h
   graffitidialog.cpp
   graffitidialog.h
+  marketsdialog.cpp
+  marketsdialog.h
   miningdialog.cpp
   miningdialog.h
   multisigdialog.cpp

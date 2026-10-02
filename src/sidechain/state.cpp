@@ -57,8 +57,8 @@ bool State::InBundle(const COutPoint& withdrawal) const
     return m_bundle && std::find(m_bundle->withdrawals.begin(), m_bundle->withdrawals.end(), withdrawal) != m_bundle->withdrawals.end();
 }
 
-bool State::ApplyMainEvents(int main_height, const Mainchain& mainchain, int height, StateUndo& undo,
-                            std::vector<CTxOut>& payouts, std::string& reject_reason)
+bool State::ApplyMainEvents(int main_height, const Mainchain& mainchain, int height, const Consensus::SidechainParams& params,
+                            StateUndo& undo, std::vector<CTxOut>& payouts, std::string& reject_reason)
 {
     if (main_height < m_main_height) {
         reject_reason = "bad-sc-main-height";
@@ -91,6 +91,10 @@ bool State::ApplyMainEvents(int main_height, const Mainchain& mainchain, int hei
         }
     }
     m_main_height = main_height;
+
+    // The markets go by the clock of the mainchain: resolve what is due, pay what is decided.
+    const auto main_block{mainchain.GetBlock(main_height)};
+    m_hivemind.BeginBlock(height, main_block ? main_block->time : 0, params.hivemind, payouts);
     return true;
 }
 
@@ -166,6 +170,7 @@ bool State::CheckRefund(const RefundRequest& request, std::string& reject_reason
 bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::SidechainParams& params, StateUndo& undo,
                     std::vector<CTxOut>& payouts, std::string& reject_reason)
 {
+    if (!m_hivemind.ApplyTx(tx, height, params.hivemind, payouts, reject_reason)) return false;
     for (uint32_t n{0}; n < tx.vout.size(); ++n) {
         const CTxOut& out{tx.vout[n]};
         if (IsWithdrawalScript(out.scriptPubKey)) {
@@ -207,7 +212,8 @@ bool State::ConnectBlock(const CBlock& block, int height, const Consensus::Sidec
         return false;
     }
     std::vector<CTxOut> payouts;
-    if (!ApplyMainEvents(*bmm_height - 1, mainchain, height, undo, payouts, reject_reason)) return false;
+    hivemind::State markets_before{m_hivemind};
+    if (!ApplyMainEvents(*bmm_height - 1, mainchain, height, params, undo, payouts, reject_reason)) return false;
 
     // A new bundle takes the withdrawals that were waiting before this block.
     std::optional<uint256> commitment;
@@ -232,6 +238,9 @@ bool State::ConnectBlock(const CBlock& block, int height, const Consensus::Sidec
         reject_reason = "bad-sc-payouts-missing";
         return false;
     }
+    // Kept whole, to revert the block: simple, and as large as the markets are.
+    if (!(markets_before == m_hivemind)) undo.hivemind = std::move(markets_before);
+
     minted = 0;
     for (size_t i{0}; i < payouts.size(); ++i) {
         if (coinbase[1 + i] != payouts[i]) {
@@ -255,6 +264,7 @@ void State::DisconnectBlock(const StateUndo& undo)
     m_main_height = undo.main_height;
     m_bundle = undo.bundle;
     m_last_failure_height = undo.last_failure_height;
+    if (undo.hivemind) m_hivemind = *undo.hivemind;
 }
 
 } // namespace sidechain

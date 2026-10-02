@@ -116,6 +116,8 @@ add_library(bitcoin_common STATIC EXCLUDE_FROM_ALL
   common/url.cpp
   compressor.cpp
   core_io.cpp
+  hivemind/math.cpp
+  hivemind/state.cpp
   sidechain/script.cpp
   drivechain/sidechain.cpp
   deploymentinfo.cpp
@@ -268,6 +270,7 @@ add_library(bitcoin_node STATIC EXCLUDE_FROM_ALL
   rest.cpp
   rpc/blockchain.cpp
   rpc/drivechain.cpp
+  rpc/hivemind.cpp
   rpc/sidechain.cpp
   rpc/external_signer.cpp
   rpc/fees.cpp

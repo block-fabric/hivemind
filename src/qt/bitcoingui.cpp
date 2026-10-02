@@ -9,6 +9,7 @@
 #include <qt/blockexplorer.h>
 #include <qt/cryptotoolsdialog.h>
 #include <qt/graffitidialog.h>
+#include <qt/marketsdialog.h>
 #include <qt/miningdialog.h>
 #include <qt/multisigdialog.h>
 #include <qt/proofoffundsdialog.h>
@@ -30,6 +31,7 @@
 
 #ifdef ENABLE_WALLET
 #include <qt/walletcontroller.h>
+#include <qt/theme.h>
 #include <qt/walletframe.h>
 #include <qt/walletmodel.h>
 #include <qt/walletview.h>
@@ -132,6 +134,7 @@ BitcoinGUI::BitcoinGUI(interfaces::Node& node, const PlatformStyle *_platformSty
     m_timestamp_dialog = new TimestampDialog(wallet_name, nullptr);
     m_proof_dialog = new ProofOfFundsDialog(wallet_name, nullptr);
     m_multisig_dialog = new MultisigDialog(wallet_name, nullptr);
+    m_markets_dialog = new MarketsDialog(wallet_name, nullptr);
     helpMessageDialog = new HelpMessageDialog(this, false);
 #ifdef ENABLE_WALLET
     if(enableWallet)
@@ -276,6 +279,7 @@ BitcoinGUI::~BitcoinGUI()
     delete m_timestamp_dialog;
     delete m_proof_dialog;
     delete m_multisig_dialog;
+    delete m_markets_dialog;
 }
 
 void BitcoinGUI::createActions()
@@ -635,6 +639,7 @@ void BitcoinGUI::createMenuBar()
     }
 
     QMenu* use{appMenuBar->addMenu(tr("&Use %1").arg(CLIENT_NAME))};
+    window_action(use, tr("Prediction &Markets"), tr("Trade on what will happen, and vote on what did"), m_markets_dialog);
     window_action(use, tr("Timestamp &File"), tr("Prove that a file existed, by publishing its fingerprint on the chain"), m_timestamp_dialog);
     window_action(use, tr("OP_RETURN &Graffiti"), tr("Read the messages written on the chain, and write one"), m_graffiti_dialog);
     if (walletFrame) {
@@ -710,6 +715,27 @@ void BitcoinGUI::createMenuBar()
     QMenu* node_menu{appMenuBar->addMenu(tr("This &Node"))};
     node_menu->addAction(openRPCConsoleAction);
     node_menu->addAction(optionsAction);
+    // Themes and font size apply at once.
+    QMenu* theme_menu{node_menu->addMenu(tr("&Theme"))};
+    theme_menu->setObjectName("themeMenu");
+    auto* theme_group{new QActionGroup(this)};
+    for (const auto& theme : Theme::Available()) {
+        QAction* action{theme_menu->addAction(theme.name)};
+        action->setCheckable(true);
+        action->setData(theme.id);
+        action->setChecked(theme.id == Theme::Saved());
+        theme_group->addAction(action);
+    }
+    connect(theme_group, &QActionGroup::triggered, this, [](QAction* action) { Theme::Save(action->data().toString()); });
+    connect(theme_menu, &QMenu::aboutToShow, this, [theme_group] {
+        for (QAction* action : theme_group->actions()) action->setChecked(action->data().toString() == Theme::Saved());
+    });
+    QAction* larger{node_menu->addAction(tr("Increase font size"))};
+    larger->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Plus));
+    connect(larger, &QAction::triggered, this, [] { Theme::SaveFont(Theme::SavedFontFamily(), Theme::SavedFontSizeAdjustment() + 1); });
+    QAction* smaller{node_menu->addAction(tr("Decrease font size"))};
+    smaller->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Minus));
+    connect(smaller, &QAction::triggered, this, [] { Theme::SaveFont(Theme::SavedFontFamily(), Theme::SavedFontSizeAdjustment() - 1); });
     node_menu->addAction(showHelpMessageAction);
     node_menu->addSeparator();
     node_menu->addAction(aboutAction);
@@ -770,6 +796,7 @@ void BitcoinGUI::createToolBars()
         entry(historyAction);
 
         section(tr("Chain"));
+        window_entry(":/icons/tx_inout", tr("Markets"), tr("Prediction markets: trade on what will happen, and vote on what did"), m_markets_dialog);
         entry(sidechainAction);
         window_entry(":/icons/eye", tr("Block Explorer"), tr("Browse blocks and the transactions waiting to be mined"), m_block_explorer);
 
@@ -858,6 +885,7 @@ void BitcoinGUI::setClientModel(ClientModel *_clientModel, interfaces::BlockAndH
         m_timestamp_dialog->setClientModel(_clientModel);
         m_proof_dialog->setClientModel(_clientModel);
         m_multisig_dialog->setClientModel(_clientModel);
+        m_markets_dialog->setClientModel(_clientModel);
 
         updateProxyIcon();
 
@@ -895,6 +923,7 @@ void BitcoinGUI::setClientModel(ClientModel *_clientModel, interfaces::BlockAndH
         m_timestamp_dialog->setClientModel(nullptr);
         m_proof_dialog->setClientModel(nullptr);
         m_multisig_dialog->setClientModel(nullptr);
+        m_markets_dialog->setClientModel(nullptr);
 #ifdef ENABLE_WALLET
         if (walletFrame)
         {
