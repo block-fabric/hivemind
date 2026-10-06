@@ -42,6 +42,7 @@ class WalletController;
 class WalletFrame;
 class BlockExplorer;
 class CryptoToolsDialog;
+class MarketsDialog;
 class MiningDialog;
 class MultisigDialog;
 class ProofOfFundsDialog;
@@ -197,6 +198,7 @@ private:
     TimestampDialog* m_timestamp_dialog{nullptr};
     ProofOfFundsDialog* m_proof_dialog{nullptr};
     MultisigDialog* m_multisig_dialog{nullptr};
+    MarketsDialog* m_markets_dialog{nullptr};
     HelpMessageDialog* helpMessageDialog = nullptr;
     ModalOverlay* modalOverlay = nullptr;
 

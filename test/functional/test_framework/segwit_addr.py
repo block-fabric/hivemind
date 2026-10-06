@@ -128,14 +128,14 @@ class TestFrameworkScript(unittest.TestCase):
     def test_segwit_encode_decode(self):
         def test_python_bech32(addr):
             hrp = addr[:addr.rfind("1")]
-            self.assertEqual(hrp, "rsc")
+            self.assertEqual(hrp, "rhm")
             (witver, witprog) = decode_segwit_address(hrp, addr)
             self.assertEqual(encode_segwit_address(hrp, witver, witprog), addr)
 
         # P2WPKH
-        test_python_bech32('rsc1qthmht0k2qnh3wy7336z05lu2km7emzfp62ukyn')
+        test_python_bech32('rhm1qthmht0k2qnh3wy7336z05lu2km7emzfpd8njth')
         # P2WSH
-        test_python_bech32('rsc1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq7r4vx7')
-        test_python_bech32('rsc1qft5p2uhsdcdc3l2ua4ap5qqfg4pjaqlp250x7us7a8qqhrxrxfsqlu5d9c')
+        test_python_bech32('rhm1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqtgwy8k')
+        test_python_bech32('rhm1qft5p2uhsdcdc3l2ua4ap5qqfg4pjaqlp250x7us7a8qqhrxrxfsq2h09ys')
         # P2TR
-        test_python_bech32('rsc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqhzpwlk')
+        test_python_bech32('rhm1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzf6x77')

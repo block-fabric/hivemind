@@ -3,7 +3,7 @@
         "5120eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
         {
             "asm": "1 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            "address": "rsc1pamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhqdl6eam",
+            "address": "rhm1pamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhqc5p3un",
             "desc": "rawtr(eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee)#jk7c6kys",
             "type": "witness_v1_taproot"
         }
@@ -12,8 +12,8 @@
         "5102eeee",
         {
             "asm": "1 -28398",
-            "address": "rsc1pamhq7kw325",
-            "desc": "addr(rsc1pamhq7kw325)#hnskl84q",
+            "address": "rhm1pamhqhkgs9d",
+            "desc": "addr(rhm1pamhqhkgs9d)#7xwec8pl",
             "type": "witness_unknown"
         }
     ],
@@ -21,8 +21,8 @@
         "0020eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
         {
             "asm": "0 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            "address": "rsc1qamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhq8g6s98",
-            "desc": "addr(rsc1qamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhq8g6s98)#p6y8g7sk",
+            "address": "rhm1qamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhqjrpcy0",
+            "desc": "addr(rhm1qamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhwamhqjrpcy0)#preph8ue",
             "type": "witness_v0_scripthash",
             "p2sh": "2MwGk8mw1GBP6U9D5X8gTvgvXpuknmAK3fo"
         }
@@ -69,9 +69,9 @@
             "p2sh": "2N34iiGoUUkVSPiaaTFpJjB1FR9TXQu3PGM",
             "segwit": {
                 "asm": "0 96c2368fc30514a438a8bd909f93c49a1549d77198ccbdb792043b666cb24f42",
-                "desc": "addr(rsc1qjmprdr7rq522gw9ghkgfly7yng25n4m3nrxtmdujqsakvm9jfapqemvpac)#kuqv0jzr",
+                "desc": "addr(rhm1qjmprdr7rq522gw9ghkgfly7yng25n4m3nrxtmdujqsakvm9jfapqvshfus)#3v2vn0lk",
                 "hex": "002096c2368fc30514a438a8bd909f93c49a1549d77198ccbdb792043b666cb24f42",
-                "address": "rsc1qjmprdr7rq522gw9ghkgfly7yng25n4m3nrxtmdujqsakvm9jfapqemvpac",
+                "address": "rhm1qjmprdr7rq522gw9ghkgfly7yng25n4m3nrxtmdujqsakvm9jfapqvshfus",
                 "type": "witness_v0_scripthash",
                 "p2sh-segwit": "2MtoejEictTQ6XtmHYzoYttt35Ec6krqFKN"
             }

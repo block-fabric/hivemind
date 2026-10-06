@@ -115,6 +115,10 @@ bool State::ApplyMainEvents(int main_height, const Mainchain& mainchain, int hei
         }
     }
     m_main_height = main_height;
+
+    // The markets go by the clock of the mainchain: resolve what is due, pay what is decided.
+    const auto main_block{mainchain.GetBlock(main_height)};
+    m_hivemind.BeginBlock(height, main_block ? main_block->time : 0, params.hivemind, payouts);
     return true;
 }
 
@@ -190,6 +194,7 @@ bool State::CheckRefund(const RefundRequest& request, std::string& reject_reason
 bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::SidechainParams& params, StateUndo& undo,
                     std::vector<CTxOut>& payouts, std::string& reject_reason)
 {
+    if (!m_hivemind.ApplyTx(tx, height, params.hivemind, payouts, reject_reason)) return false;
     for (uint32_t n{0}; n < tx.vout.size(); ++n) {
         const CTxOut& out{tx.vout[n]};
         if (IsWithdrawalScript(out.scriptPubKey)) {
@@ -231,6 +236,7 @@ bool State::ConnectBlock(const CBlock& block, int height, const Consensus::Sidec
         return false;
     }
     std::vector<CTxOut> payouts, tx_payouts;
+    hivemind::State markets_before{m_hivemind};
     if (!ApplyMainEvents(*bmm_height - 1, mainchain, height, params, undo, payouts, reject_reason)) return false;
 
     // A new bundle takes the withdrawals that were waiting before this block.
@@ -264,6 +270,9 @@ bool State::ConnectBlock(const CBlock& block, int height, const Consensus::Sidec
         reject_reason = "bad-sc-payouts-missing";
         return false;
     }
+    // What the block changed in the markets, to revert it.
+    if (!(markets_before == m_hivemind)) undo.hivemind = hivemind::State::Diff(markets_before, m_hivemind);
+
     minted = 0;
     for (size_t i{0}; i < payouts.size(); ++i) {
         if (coinbase[1 + i] != payouts[i]) {
@@ -314,6 +323,7 @@ void State::DisconnectBlock(const StateUndo& undo)
     m_main_height = undo.main_height;
     m_bundle = undo.bundle;
     m_last_failure_height = undo.last_failure_height;
+    if (undo.hivemind) m_hivemind.Revert(*undo.hivemind);
 }
 
 } // namespace sidechain

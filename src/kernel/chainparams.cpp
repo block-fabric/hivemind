@@ -233,10 +233,14 @@ public:
             .redownload_buffer_size = 15400,
         };
 
-        // This chain is a sidechain of the Chains mainchain.
-        // TODO for a new sidechain: its slot, its own message, magic bytes, port and address prefix.
-        MakeSidechain({.slot = 0, .genesis_message = "Sidechain template, main network", .genesis_time = 1790900000,
-                       .message_start = {0x5c, 0x1d, 0xec, 0x01}, .default_port = 9655, .bech32_hrp = "sc"});
+        // Hivemind is a sidechain of the Chains mainchain, in slot 9.
+        MakeSidechain({.slot = 9, .genesis_message = "Hivemind: markets on what will happen, settled by those who report it", .genesis_time = 1790900000,
+                       .message_start = {0x68, 0x76, 0x6d, 0x01}, .default_port = 9855, .bech32_hrp = "hm"});
+        // The markets. One day of mainchain time per voting period.
+        consensus.sidechain.hivemind.start_time = 1790900000;
+        // TODO before launch: the hash of the key that holds the reputation at the start. Until it
+        // is set nobody can vote on this network.
+        consensus.sidechain.hivemind.genesis_account = uint160{};
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
@@ -333,11 +337,15 @@ public:
             .redownload_buffer_size = 15400,
         };
 
-        // This chain is a sidechain of the Chains testnet.
-        MakeSidechain({.slot = 0, .genesis_message = "Sidechain template, test network", .genesis_time = 1790900000,
-                       .message_start = {0x5c, 0x1d, 0xec, 0x02}, .default_port = 19655, .bech32_hrp = "tsc"});
+        // Hivemind on the Chains testnet, in slot 9.
+        MakeSidechain({.slot = 9, .genesis_message = "Hivemind testnet", .genesis_time = 1790900000,
+                       .message_start = {0x68, 0x76, 0x6d, 0x02}, .default_port = 19855, .bech32_hrp = "thm"});
         // The mainchain of the test network votes on a withdrawal bundle within 600 blocks.
         consensus.sidechain.bundle_retry_delay = 20;
+        consensus.sidechain.hivemind.start_time = 1790900000;
+        // A test network goes through the voting in hours, not days.
+        consensus.sidechain.hivemind.period_seconds = 60 * 60;
+        consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("b8d111d9b7f7e29ec30b67f26c5922afa5b2d744");
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
@@ -443,9 +451,11 @@ public:
             .redownload_buffer_size = 15885,
         };
 
-        // This chain is a sidechain of the Chains signet. Its own blocks are not signed.
-        MakeSidechain({.slot = 0, .genesis_message = "Sidechain template, signet", .genesis_time = 1790900000,
-                       .message_start = {0x5c, 0x1d, 0xec, 0x03}, .default_port = 39655, .bech32_hrp = "tsc"});
+        // Hivemind on the Chains signet, in slot 9. Its own blocks are not signed.
+        MakeSidechain({.slot = 9, .genesis_message = "Hivemind signet", .genesis_time = 1790900000,
+                       .message_start = {0x68, 0x76, 0x6d, 0x03}, .default_port = 39855, .bech32_hrp = "thm"});
+        consensus.sidechain.hivemind.start_time = 1790900000;
+        consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("864b263d30715ac8e9fbda1147d556a768b5a1b4");
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
@@ -493,11 +503,11 @@ public:
         consensus.nMinimumChainWork = uint256{};
         consensus.defaultAssumeValid = uint256{};
 
-        pchMessageStart[0] = 0x5c;
-        pchMessageStart[1] = 0x1d;
-        pchMessageStart[2] = 0xec;
+        pchMessageStart[0] = 0x68;
+        pchMessageStart[1] = 0x76;
+        pchMessageStart[2] = 0x6d;
         pchMessageStart[3] = 0x04;
-        nDefaultPort = 29655;
+        nDefaultPort = 29855;
         nPruneAfterHeight = opts.fastprune ? 100 : 1000;
 
         // On request this chain is a sidechain, with what tests need to be quick.
@@ -508,6 +518,16 @@ public:
             // A sidechain has no sidechains of its own.
             consensus.drivechain.max_sidechains = 0;
             consensus.coinbase_maturity = 0;
+            // Markets with periods of a few blocks: four to seal votes, two to reveal them.
+            consensus.sidechain.hivemind.period_blocks = 6;
+            // Or periods of a length to try the markets out by hand, counted from the beginning of time.
+            if (opts.hivemind_period_seconds) {
+                consensus.sidechain.hivemind.period_blocks = 0;
+                consensus.sidechain.hivemind.period_seconds = *opts.hivemind_period_seconds;
+                consensus.sidechain.hivemind.start_time = 0;
+            }
+            consensus.sidechain.hivemind.max_rolls = 1;
+            consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("c22f79ea0ef7374ef0cc03ce91f791063a5e2032");
         }
         m_assumed_blockchain_size = 0;
         m_assumed_chain_state_size = 0;
@@ -562,7 +582,7 @@ public:
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x35, 0x83, 0x94};
 
         // Its own, so that an address of another chain is not taken for one of this chain.
-        bech32_hrp = "rsc";
+        bech32_hrp = "rhm";
 
         // Copied from Testnet4.
         m_headers_sync_params = HeadersSyncParams{

@@ -7,6 +7,7 @@
 
 #include <consensus/amount.h>
 #include <consensus/params.h>
+#include <hivemind/state.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <script/script.h>
@@ -119,13 +120,16 @@ struct StateUndo {
     uint64_t queued{0};
     std::vector<CTxOut> paid_tx;
     uint64_t queued_tx{0};
+    //! What the block changed in the markets, if anything.
+    std::optional<hivemind::StateUndo> hivemind;
 
     template <typename Stream>
     void Serialize(Stream& s) const
     {
         s << main_height << bundle.has_value();
         if (bundle) s << *bundle;
-        s << last_failure_height << added << removed << paid << queued << paid_tx << queued_tx;
+        s << last_failure_height << added << removed << paid << queued << paid_tx << queued_tx << hivemind.has_value();
+        if (hivemind) s << *hivemind;
     }
     template <typename Stream>
     void Unserialize(Stream& s)
@@ -134,7 +138,10 @@ struct StateUndo {
         s >> main_height >> has_bundle;
         bundle.reset();
         if (has_bundle) s >> bundle.emplace();
-        s >> last_failure_height >> added >> removed >> paid >> queued >> paid_tx >> queued_tx;
+        bool has_hivemind;
+        s >> last_failure_height >> added >> removed >> paid >> queued >> paid_tx >> queued_tx >> has_hivemind;
+        hivemind.reset();
+        if (has_hivemind) s >> hivemind.emplace();
     }
 };
 
@@ -201,13 +208,15 @@ public:
     std::optional<CMutableTransaction> BundleTx() const;
     bool InBundle(const COutPoint& withdrawal) const;
     int32_t LastFailureHeight() const { return m_last_failure_height; }
+    /** The prediction markets. */
+    const hivemind::State& Hivemind() const { return m_hivemind; }
 
     template <typename Stream>
     void Serialize(Stream& s) const
     {
         s << m_main_height << m_withdrawals << m_bundle.has_value();
         if (m_bundle) s << *m_bundle;
-        s << m_last_failure_height << m_queue << m_queue_tx;
+        s << m_last_failure_height << m_queue << m_queue_tx << m_hivemind;
     }
     template <typename Stream>
     void Unserialize(Stream& s)
@@ -216,7 +225,7 @@ public:
         s >> m_main_height >> m_withdrawals >> has_bundle;
         m_bundle.reset();
         if (has_bundle) s >> m_bundle.emplace();
-        s >> m_last_failure_height >> m_queue >> m_queue_tx;
+        s >> m_last_failure_height >> m_queue >> m_queue_tx >> m_hivemind;
     }
     friend bool operator==(const State&, const State&) = default;
 
@@ -232,6 +241,7 @@ private:
     //! Payouts owed beyond what earlier blocks could pay, oldest first: from the mainchain, and from transactions.
     std::vector<CTxOut> m_queue;
     std::vector<CTxOut> m_queue_tx;
+    hivemind::State m_hivemind;
 };
 
 //

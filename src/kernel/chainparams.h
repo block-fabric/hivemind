@@ -159,6 +159,9 @@ public:
         bool enforce_bip94{false};
         //! If set, the chain is a sidechain in this slot of the mainchain.
         std::optional<uint32_t> sidechain_slot{};
+        //! If set, the voting periods of the markets are this many seconds of mainchain time, as on the other
+        //! networks, instead of a few blocks.
+        std::optional<int64_t> hivemind_period_seconds{};
     };
 
     struct MainNetOptions {

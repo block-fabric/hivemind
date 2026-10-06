@@ -1178,7 +1178,8 @@ BOOST_AUTO_TEST_CASE(paid_on_another_branch)
     BOOST_REQUIRE_EQUAL(state.Withdrawals().size(), 1U);
     BOOST_CHECK_EQUAL(state.Withdrawals().begin()->second.amount, 2 * COIN - 1000);
     state.DisconnectBlock(main_undo);
-    BOOST_CHECK(state == before);
+    // Here following the mainchain also starts the markets, which the undo of a whole block reverts.
+    BOOST_CHECK(state.Withdrawals() == before.Withdrawals());
 }
 
 BOOST_AUTO_TEST_CASE(paid_on_another_branch_oldest_first)

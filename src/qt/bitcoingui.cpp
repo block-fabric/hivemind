@@ -8,6 +8,7 @@
 
 #include <qt/blockexplorer.h>
 #include <qt/cryptotoolsdialog.h>
+#include <qt/marketsdialog.h>
 #include <qt/miningdialog.h>
 #include <qt/multisigdialog.h>
 #include <qt/proofoffundsdialog.h>
@@ -136,6 +137,7 @@ BitcoinGUI::BitcoinGUI(interfaces::Node& node, const PlatformStyle *_platformSty
     m_timestamp_dialog = new TimestampDialog(wallet_name, nullptr);
     m_proof_dialog = new ProofOfFundsDialog(wallet_name, nullptr);
     m_multisig_dialog = new MultisigDialog(wallet_name, nullptr);
+    m_markets_dialog = new MarketsDialog(wallet_name, nullptr);
     helpMessageDialog = new HelpMessageDialog(this, false);
 #ifdef ENABLE_WALLET
     if(enableWallet)
@@ -279,6 +281,7 @@ BitcoinGUI::~BitcoinGUI()
     delete m_timestamp_dialog;
     delete m_proof_dialog;
     delete m_multisig_dialog;
+    delete m_markets_dialog;
 }
 
 void BitcoinGUI::createActions()
@@ -644,6 +647,7 @@ void BitcoinGUI::createMenuBar()
     }
 
     QMenu* use{appMenuBar->addMenu(tr("&Use %1").arg(CLIENT_NAME))};
+    window_action(use, tr("Prediction &Markets"), tr("Trade on what will happen, and vote on what did"), m_markets_dialog);
     window_action(use, tr("Timestamp &File"), tr("Prove that a file existed, by publishing its fingerprint on the chain"), m_timestamp_dialog);
     if (walletFrame) {
         use->addSeparator();
@@ -817,6 +821,7 @@ void BitcoinGUI::createToolBars()
         entry(historyAction);
 
         section(tr("Chain"));
+        window_entry(":/icons/tx_inout", tr("Markets"), tr("Prediction markets: trade on what will happen, and vote on what did"), m_markets_dialog);
         entry(sidechainAction);
         window_entry(":/icons/eye", tr("Block Explorer"), tr("Browse blocks and the transactions waiting to be mined"), m_block_explorer);
 
@@ -958,6 +963,7 @@ void BitcoinGUI::setClientModel(ClientModel *_clientModel, interfaces::BlockAndH
         m_timestamp_dialog->setClientModel(_clientModel);
         m_proof_dialog->setClientModel(_clientModel);
         m_multisig_dialog->setClientModel(_clientModel);
+        m_markets_dialog->setClientModel(_clientModel);
 
         updateProxyIcon();
 
@@ -995,6 +1001,7 @@ void BitcoinGUI::setClientModel(ClientModel *_clientModel, interfaces::BlockAndH
         m_timestamp_dialog->setClientModel(nullptr);
         m_proof_dialog->setClientModel(nullptr);
         m_multisig_dialog->setClientModel(nullptr);
+        m_markets_dialog->setClientModel(nullptr);
 #ifdef ENABLE_WALLET
         if (walletFrame)
         {

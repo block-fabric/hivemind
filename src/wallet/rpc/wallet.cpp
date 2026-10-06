@@ -1112,6 +1112,13 @@ RPCMethod encryptwallet();
 RPCMethod sendtoaddress();
 RPCMethod getdepositaddress();
 RPCMethod createwithdrawal();
+RPCMethod createdecision();
+RPCMethod createmarket();
+RPCMethod buyshares();
+RPCMethod sellshares();
+RPCMethod transfervotecoin();
+RPCMethod sealvote();
+RPCMethod revealvote();
 RPCMethod refundwithdrawal();
 RPCMethod sendmany();
 RPCMethod fundrawtransaction();
@@ -1187,6 +1194,13 @@ std::span<const CRPCCommand> GetWalletRPCCommands()
         {"wallet", &sendtoaddress},
         {"wallet", &getdepositaddress},
         {"wallet", &createwithdrawal},
+        {"wallet", &createdecision},
+        {"wallet", &createmarket},
+        {"wallet", &buyshares},
+        {"wallet", &sellshares},
+        {"wallet", &transfervotecoin},
+        {"wallet", &sealvote},
+        {"wallet", &revealvote},
         {"wallet", &refundwithdrawal},
         {"wallet", &setlabel},
         {"wallet", &setwalletflag},

@@ -687,6 +687,69 @@ public:
             return util::Error{Untranslated(e.what())};
         }
     }
+    Consensus::HivemindParams getHivemindParams() override { return chainman().GetConsensus().sidechain.hivemind; }
+    std::string whyNoMarketOn(const std::vector<uint256>& decisions) override
+    {
+        LOCK(::cs_main);
+        const hivemind::State& markets{chainman().ActiveChainstate().m_scdb.m_side.Hivemind()};
+        for (const uint256& id : decisions) {
+            const auto it{markets.Decisions().find(id)};
+            if (it == markets.Decisions().end()) {
+                return strprintf("There is no decision %s on the chain. One that was just listed has to be mined first.", id.GetHex());
+            }
+            const hivemind::Decision& decision{it->second};
+            if (decision.resolved) return strprintf("The decision \"%s\" is resolved already: there is nothing left to trade on.", decision.listing.text);
+            if (markets.Period() > decision.listing.event_period) {
+                return strprintf("The decision \"%s\" is about period %u, and the chain is in period %u: its answer is being voted on, and a market can only be opened before that. "
+                                 "List the decision again with a later period.", decision.listing.text, decision.listing.event_period, markets.Period());
+            }
+        }
+        return {};
+    }
+    CAmount getDecisionListingFee(uint32_t close_period) override
+    {
+        LOCK(::cs_main);
+        return chainman().ActiveChainstate().m_scdb.m_side.Hivemind().ListingFee(close_period, chainman().GetConsensus().sidechain.hivemind);
+    }
+    CAmount getMarketOpeningFee(const std::vector<uint256>& decisions) override
+    {
+        LOCK(::cs_main);
+        return chainman().ActiveChainstate().m_scdb.m_side.Hivemind().MarketFee(decisions, chainman().GetConsensus().sidechain.hivemind);
+    }
+    std::optional<uint256> getVoteCommitment(const uint256& decision, const uint160& voter) override
+    {
+        LOCK(::cs_main);
+        const auto& votes{chainman().ActiveChainstate().m_scdb.m_side.Hivemind().Votes()};
+        const auto it{votes.find(hivemind::VoteKey{decision, voter})};
+        if (it == votes.end()) return std::nullopt;
+        return it->second.commitment;
+    }
+    std::optional<uint8_t> getDecisionRolls(const uint256& decision) override
+    {
+        LOCK(::cs_main);
+        const auto& decisions{chainman().ActiveChainstate().m_scdb.m_side.Hivemind().Decisions()};
+        const auto it{decisions.find(decision)};
+        if (it == decisions.end()) return std::nullopt;
+        return it->second.rolls;
+    }
+    std::optional<bool> getDecisionSealable(const uint256& decision) override
+    {
+        LOCK(::cs_main);
+        const hivemind::State& state{chainman().ActiveChainstate().m_scdb.m_side.Hivemind()};
+        const auto it{state.Decisions().find(decision)};
+        if (it == state.Decisions().end() || it->second.resolved) return std::nullopt;
+        return !(state.RevealPhase() && it->second.close_period <= state.Period());
+    }
+    std::string whyNoMarketTrade(const uint256& market, uint8_t state, int64_t shares) override
+    {
+        LOCK(::cs_main);
+        return chainman().ActiveChainstate().m_scdb.m_side.Hivemind().WhyNoTrade(market, state, shares);
+    }
+    std::optional<CAmount> quoteMarketTrade(const uint256& market, uint8_t state, int64_t shares) override
+    {
+        LOCK(::cs_main);
+        return chainman().ActiveChainstate().m_scdb.m_side.Hivemind().Quote(market, state, shares);
+    }
     double guessVerificationProgress(const uint256& block_hash) override
     {
         LOCK(chainman().GetMutex());
