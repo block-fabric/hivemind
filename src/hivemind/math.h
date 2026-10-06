@@ -90,9 +90,20 @@ struct Resolution {
  * @param[in] scaled      per decision, whether its answer is a point on a scale, as opposed to yes (ONE) or no (0)
  * @param[in] alpha_num, alpha_den  how much of the reputation is put at stake by a vote
  * @param[in] tolerance   width of the band around ONE/2 in which a yes or no decision is a tie, in 1/ONE
+ * @param[in] quorum      reputation that has to give an answer to a decision for it to be resolved now
+ * @param[in] last_round  per decision, whether it is voted on for the last time: then saying that its
+ *                        answer cannot be known is no vote, and it is resolved on the answers given
+ *                        (empty: none is)
+ *
+ * Who skipped votes loses part of the reputation at stake, but never more in all than what those
+ * who voted put at stake themselves: a few voters cannot take much from the many who did not vote.
  */
 Resolution Resolve(const std::vector<int64_t>& reputation, const std::vector<std::vector<int64_t>>& votes,
-                   const std::vector<bool>& scaled, int64_t alpha_num, int64_t alpha_den, int64_t tolerance);
+                   const std::vector<bool>& scaled, int64_t alpha_num, int64_t alpha_den, int64_t tolerance,
+                   int64_t quorum = 0, const std::vector<bool>& last_round = {});
+
+/** Deal `total` out in proportion to `weights`, to the last unit (largest remainders first). */
+std::vector<int64_t> Share(const std::vector<int64_t>& weights, int64_t total);
 
 } // namespace hivemind
 

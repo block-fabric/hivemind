@@ -12,6 +12,8 @@
 #include <rpc/util.h>
 #include <univalue.h>
 #include <validation.h>
+#include <limits>
+#include <algorithm>
 
 using hivemind::Account;
 using hivemind::Decision;
@@ -97,6 +99,13 @@ UniValue MarketToJSON(const Id& id, const Market& market, const View& view)
     obj.pushKV("feebps", market.opening.fee_bps);
     obj.pushKV("height", market.height);
     obj.pushKV("status", market.settled ? "settled" : view.state.TradingOpen(market) ? "trading" : "closed");
+    // Trading stops when the first of the decisions is up for the vote.
+    uint32_t trading_until{std::numeric_limits<uint32_t>::max()};
+    for (const Id& decision : market.opening.decisions) {
+        const auto it{view.state.Decisions().find(decision)};
+        if (it != view.state.Decisions().end()) trading_until = std::min(trading_until, it->second.listing.event_period);
+    }
+    if (trading_until != std::numeric_limits<uint32_t>::max()) obj.pushKV("tradinguntil", trading_until);
     obj.pushKV("treasury", ValueFromAmount(market.treasury));
     obj.pushKV("fees", ValueFromAmount(market.fees));
     UniValue states(UniValue::VARR);
@@ -127,6 +136,7 @@ RPCMethod gethivemindinfo()
             {RPCResult::Type::NUM, "period", "The current voting period"},
             {RPCResult::Type::STR, "phase", "\"seal\" while votes are sealed, \"reveal\" in the last third of a period, when the votes that end in it are revealed"},
             {RPCResult::Type::NUM, "periodseconds", /*optional=*/true, "The length of a period in seconds of mainchain time"},
+            {RPCResult::Type::NUM, "starttime", /*optional=*/true, "The time at which period 0 started, where periods are counted in time: period n ends at starttime + (n + 1) * periodseconds"},
             {RPCResult::Type::NUM, "periodblocks", /*optional=*/true, "The length of a period in blocks, on test chains"},
             {RPCResult::Type::NUM, "decisions", "The number of decisions listed"},
             {RPCResult::Type::NUM, "markets", "The number of markets opened"},
@@ -134,6 +144,7 @@ RPCMethod gethivemindinfo()
             {RPCResult::Type::STR_AMOUNT, "voterpot", "Fees waiting for the voters of the next vote"},
             {RPCResult::Type::STR_AMOUNT, "listingfee", "What listing a decision costs"},
             {RPCResult::Type::NUM, "maxvoteperiods", "The most periods a decision can be voted on for"},
+            {RPCResult::Type::NUM, "maxperiodsahead", "How many periods after the current one the event of a decision can be at most"},
         }},
         RPCExamples{HelpExampleCli("gethivemindinfo", "")},
         [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
@@ -146,6 +157,7 @@ RPCMethod gethivemindinfo()
         result.pushKV("periodblocks", view.params.period_blocks);
     } else {
         result.pushKV("periodseconds", view.params.period_seconds);
+        result.pushKV("starttime", view.params.start_time);
     }
     result.pushKV("decisions", view.state.Decisions().size());
     result.pushKV("markets", view.state.Markets().size());
@@ -153,6 +165,7 @@ RPCMethod gethivemindinfo()
     result.pushKV("voterpot", ValueFromAmount(view.state.VoterPot()));
     result.pushKV("listingfee", ValueFromAmount(view.params.listing_fee));
     result.pushKV("maxvoteperiods", view.params.max_vote_periods);
+    result.pushKV("maxperiodsahead", view.params.max_periods_ahead);
     return result;
 },
     };
@@ -282,6 +295,7 @@ RPCMethod getmarket()
             {RPCResult::Type::NUM, "feebps", "The trading fee in hundredths of a percent"},
             {RPCResult::Type::NUM, "height", "The height of the block that opened it"},
             {RPCResult::Type::STR, "status", "\"trading\", \"closed\" or \"settled\""},
+            {RPCResult::Type::NUM, "tradinguntil", /*optional=*/true, "The period at the end of which trading stops: the first in which one of the decisions has its event"},
             {RPCResult::Type::STR_AMOUNT, "treasury", "What the market maker holds"},
             {RPCResult::Type::STR_AMOUNT, "fees", "The trading fees collected"},
             {RPCResult::Type::ARR, "states", "The states of the market",
@@ -348,8 +362,10 @@ RPCMethod quotetrade()
     UniValue magnitude;
     magnitude.setNumStr(selling ? amount.getValStr().substr(1) : amount.getValStr());
     const CAmount shares{AmountFromValue(magnitude)};
-    const auto quote{view.state.Quote(ParseHashV(request.params[0], "market"), static_cast<uint8_t>(request.params[1].getInt<int>()), selling ? -shares : shares)};
-    if (!quote) throw JSONRPCError(RPC_INVALID_PARAMETER, "The market cannot be traded in, or has no such state, or not as many shares");
+    const uint256 market{ParseHashV(request.params[0], "market")};
+    const auto state{static_cast<uint8_t>(request.params[1].getInt<int>())};
+    const auto quote{view.state.Quote(market, state, selling ? -shares : shares)};
+    if (!quote) throw JSONRPCError(RPC_INVALID_PARAMETER, view.state.WhyNoTrade(market, state, selling ? -shares : shares));
     return ValueFromAmount(*quote);
 },
     };

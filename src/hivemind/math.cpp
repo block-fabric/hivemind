@@ -97,9 +97,28 @@ i128 Abs(i128 a) { return a < 0 ? -a : a; }
  * the share rounded down, and the units left over go to the largest remainders,
  * the first one in the list winning a tie.
  */
-std::vector<int64_t> Apportion(const std::vector<i128>& weights, int64_t total)
+std::vector<int64_t> Apportion(const std::vector<i128>& raw_weights, int64_t total)
 {
-    std::vector<int64_t> parts(weights.size(), 0);
+    std::vector<int64_t> parts(raw_weights.size(), 0);
+    if (total <= 0) return parts;
+    // Negative weights count as none. The weights are brought down, all by the same power of two,
+    // until a weight times the total, and the sum of the weights, fit with room to spare in 128 bits.
+    std::vector<i128> weights(raw_weights.size());
+    i128 largest{0};
+    for (size_t i{0}; i < raw_weights.size(); ++i) {
+        weights[i] = std::max<i128>(raw_weights[i], 0);
+        largest = std::max(largest, weights[i]);
+    }
+    int total_bits{0};
+    while ((i128{1} << total_bits) <= total) ++total_bits;
+    int count_bits{0};
+    while ((size_t{1} << count_bits) <= weights.size()) ++count_bits;
+    const int room{124 - std::max(total_bits, count_bits)};
+    int shift{0};
+    while ((largest >> shift) >= (i128{1} << room)) ++shift;
+    if (shift > 0) {
+        for (i128& weight : weights) weight >>= shift;
+    }
     const i128 sum{std::accumulate(weights.begin(), weights.end(), i128{0})};
     if (sum <= 0) return parts;
     std::vector<std::pair<i128, size_t>> remainders;
@@ -169,6 +188,11 @@ std::vector<int64_t> Outcomes(const std::vector<std::vector<int64_t>>& filled, c
 
 } // namespace
 
+std::vector<int64_t> Share(const std::vector<int64_t>& weights, int64_t total)
+{
+    return Apportion(std::vector<i128>(weights.begin(), weights.end()), total);
+}
+
 int64_t LmsrTradeCost(const std::vector<int64_t>& before, const std::vector<int64_t>& after, int64_t b)
 {
     const i128 difference{Cost(after, b) - Cost(before, b)};
@@ -196,11 +220,13 @@ std::vector<int64_t> LmsrPrices(const std::vector<int64_t>& shares, int64_t b)
 }
 
 Resolution Resolve(const std::vector<int64_t>& reputation, const std::vector<std::vector<int64_t>>& votes,
-                   const std::vector<bool>& scaled, int64_t alpha_num, int64_t alpha_den, int64_t tolerance)
+                   const std::vector<bool>& scaled, int64_t alpha_num, int64_t alpha_den, int64_t tolerance,
+                   int64_t quorum, const std::vector<bool>& last_round)
 {
     const size_t voters{reputation.size()};
     const size_t decisions{scaled.size()};
     Assert(votes.size() == voters && alpha_num >= 0 && alpha_den > 0 && alpha_num <= alpha_den);
+    Assert(last_round.empty() || last_round.size() == decisions);
     const int64_t total{std::accumulate(reputation.begin(), reputation.end(), int64_t{0})};
 
     Resolution result;
@@ -211,16 +237,19 @@ Resolution Resolve(const std::vector<int64_t>& reputation, const std::vector<std
     if (voters == 0 || decisions == 0 || total <= 0) return result;
 
     // A decision is voted again later if those who say that its answer cannot be known
-    // yet outweigh those who give one, or if nobody gives one.
+    // yet outweigh those who give one, or if too few give one. In its last round, saying
+    // that the answer cannot be known counts for nothing: otherwise a few could force a tie,
+    // at no risk to themselves, by saying so until the rounds run out.
     std::vector<bool> roll(decisions, false);
     size_t kept{0};
     for (size_t j{0}; j < decisions; ++j) {
+        const bool last{!last_round.empty() && last_round[j]};
         i128 unknown{0}, answered{0};
         for (size_t i{0}; i < voters; ++i) {
-            if (votes[i][j] == VOTE_UNKNOWN) unknown += reputation[i];
+            if (votes[i][j] == VOTE_UNKNOWN && !last) unknown += reputation[i];
             if (votes[i][j] >= 0) answered += reputation[i];
         }
-        roll[j] = answered == 0 || unknown > answered;
+        roll[j] = answered == 0 || answered < quorum || unknown > answered;
         if (roll[j]) {
             result.outcomes[j] = OUTCOME_ROLL;
         } else {
@@ -228,12 +257,14 @@ Resolution Resolve(const std::vector<int64_t>& reputation, const std::vector<std
         }
     }
 
-    // Who voted, on what share of the decisions that are resolved now. Saying that an
-    // answer cannot be known is a vote too.
+    // Who voted, on the decisions that are resolved now. Decisions voted again later count
+    // for nothing here: listing decisions nobody can answer would otherwise make everyone who
+    // does not vote on them lose reputation. Saying that the answer to a decision that has
+    // one cannot be known is no vote either: it would be a vote that can never be wrong.
     std::vector<int64_t> cast(voters, 0);
     for (size_t i{0}; i < voters; ++i) {
         for (size_t j{0}; j < decisions; ++j) {
-            if (votes[i][j] != VOTE_MISSING) ++cast[i];
+            if (!roll[j] && votes[i][j] >= 0) ++cast[i];
         }
     }
 
@@ -327,9 +358,15 @@ Resolution Resolve(const std::vector<int64_t>& reputation, const std::vector<std
             // One end of the line is the truth, the other the furthest from it. Each reading
             // gives a way to deal out the reputation at stake: by the distance from the end
             // that is wrong, times the reputation held.
+            // The distances are brought down to 40 bits first, so that times a reputation they
+            // stay far from the limits of 128 bits, however many decisions the positions sum over.
+            int spread_shift{0};
+            while (((highest - lowest) >> spread_shift) >= (i128{1} << 40)) ++spread_shift;
+            const auto from_low{[&](size_t i) { return (position[i] - lowest) >> spread_shift; }};
+            const auto from_high{[&](size_t i) { return (highest - position[i]) >> spread_shift; }};
             const auto deal{[&](bool low_is_wrong) {
                 std::vector<i128> weights(voters);
-                for (size_t i{0}; i < voters; ++i) weights[i] = (low_is_wrong ? position[i] - lowest : highest - position[i]) * reputation[i];
+                for (size_t i{0}; i < voters; ++i) weights[i] = (low_is_wrong ? from_low(i) : from_high(i)) * reputation[i];
                 return Apportion(weights, total);
             }};
             const std::vector<int64_t> first{deal(true)};
@@ -357,8 +394,8 @@ Resolution Resolve(const std::vector<int64_t>& reputation, const std::vector<std
                 // reputation is taken to be right; if the sides are even, nothing changes.
                 i128 low_side{0}, high_side{0};
                 for (size_t i{0}; i < voters; ++i) {
-                    low_side += (highest - position[i]) * reputation[i];
-                    high_side += (position[i] - lowest) * reputation[i];
+                    low_side += from_high(i) * reputation[i];
+                    high_side += from_low(i) * reputation[i];
                 }
                 if (high_side > low_side) chosen = &first;
                 if (low_side > high_side) chosen = &second;
@@ -390,16 +427,28 @@ Resolution Resolve(const std::vector<int64_t>& reputation, const std::vector<std
     // Who skipped votes loses part of the reputation at stake, in proportion to the votes
     // skipped, to those who cast theirs. This is by reputation, not by head: splitting
     // reputation over many accounts changes nothing.
-    std::vector<i128> kept_weights(voters), earned_weights(voters);
-    i128 forfeited{0}, earning{0};
+    std::vector<i128> kept_weights(voters), earned_weights(voters), lost(voters);
+    i128 forfeited{0}, earning{0}, voters_stake{0};
     for (size_t i{0}; i < voters; ++i) {
         const i128 stake{i128{scored[i]} * alpha_num};
-        const i128 lost{stake * (static_cast<int64_t>(decisions) - cast[i]) / (i128{alpha_den} * static_cast<int64_t>(decisions))};
-        kept_weights[i] = scored[i] - lost;
-        forfeited += lost;
+        lost[i] = kept == 0 ? 0 : stake * (static_cast<int64_t>(kept) - cast[i]) / (i128{alpha_den} * static_cast<int64_t>(kept));
+        forfeited += lost[i];
+        if (cast[i] > 0) voters_stake += stake / alpha_den;
         earned_weights[i] = i128{scored[i]} * cast[i];
         earning += earned_weights[i];
     }
+    // No more is lost in all than what the voters put at stake: one small voter alone cannot take a
+    // tenth of everyone else's reputation.
+    if (forfeited > voters_stake) {
+        const i128 uncapped{forfeited};
+        forfeited = 0;
+        for (size_t i{0}; i < voters; ++i) {
+            // Both factors are below 2^63: the product fits.
+            lost[i] = lost[i] * voters_stake / uncapped;
+            forfeited += lost[i];
+        }
+    }
+    for (size_t i{0}; i < voters; ++i) kept_weights[i] = scored[i] - lost[i];
     if (forfeited > 0 && earning > 0) {
         const std::vector<int64_t> bonus{Apportion(earned_weights, static_cast<int64_t>(forfeited))};
         for (size_t i{0}; i < voters; ++i) result.reputation[i] = static_cast<int64_t>(kept_weights[i]) + bonus[i];

@@ -59,6 +59,10 @@ public:
  */
 static const CRPCConvertParam vRPCConvertParams[] =
 {
+    { "setbmm", 0, "mine" },
+    { "setbmm", 2, "always" },
+    { "setbmm", 3, "amount" },
+    { "requestbmmblock", 1, "amount" },
     { "createwithdrawal", 1, "amount" },
     { "createwithdrawal", 2, "mainchainfee" },
     { "refundwithdrawal", 1, "vout" },
@@ -73,6 +77,7 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "createdecision", 3, "scaled" },
     { "createdecision", 4, "min" },
     { "createdecision", 5, "max" },
+    { "createmarket", 4, "unchecked" },
     { "createmarket", 1, "decisions" },
     { "createmarket", 2, "liquidity" },
     { "createmarket", 3, "feebps" },
@@ -83,8 +88,6 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "sellshares", 2, "shares" },
     { "sellshares", 4, "minproceeds" },
     { "transfervotecoin", 2, "amount" },
-    { "setbmm", 0, "mine" },
-    { "setbmm", 2, "amount" },
     { "setgenerate", 0, "generate" },
     { "setgenerate", 2, "threads" },
     { "generatetoaddress", 0, "nblocks" },

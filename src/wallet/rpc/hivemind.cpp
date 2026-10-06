@@ -94,12 +94,21 @@ std::pair<CTransactionRef, uint32_t> SendAction(CWallet& wallet, T action, CAmou
 
 /**
  * What opens the seal of a vote. It is a signature by the voter, which the wallet
- * can make again when the vote is revealed, so that there is nothing to store.
+ * can make again when the vote is revealed, so that there is nothing to store. It
+ * is another for each round of voting on the decision: the salt of a round is
+ * public once the vote is revealed, and would open the seal of the next.
  */
-uint256 VoteSalt(const CWallet& wallet, const Account& voter, const hivemind::Id& decision)
+uint256 VoteSaltOfRound(CWallet& wallet, const Account& voter, const hivemind::Id& decision, unsigned round)
 {
-    const std::vector<unsigned char> signature{Sign(wallet, "Hivemind vote salt " + decision.GetHex(), voter)};
+    const std::vector<unsigned char> signature{Sign(wallet, strprintf("Hivemind vote salt %s round %u", decision.GetHex(), round), voter)};
     return Hash(signature);
+}
+
+uint256 VoteSalt(CWallet& wallet, const Account& voter, const hivemind::Id& decision)
+{
+    const auto rolls{wallet.chain().getDecisionRolls(decision)};
+    if (!rolls) throw JSONRPCError(RPC_INVALID_PARAMETER, "There is no such decision on the chain");
+    return VoteSaltOfRound(wallet, voter, decision, *rolls);
 }
 
 int64_t ParseAnswer(const UniValue& value)
@@ -164,7 +173,8 @@ RPCMethod createdecision()
         if (list.min >= list.max) throw JSONRPCError(RPC_INVALID_PARAMETER, "The scale needs a low end below its high end");
     }
     list.author = NewAccount(*pwallet, "decision author");
-    const auto [tx, index]{SendAction(*pwallet, list, pwallet->chain().getHivemindParams().listing_fee)};
+    // The fee is the listing fee, more if the period is filling up; the voters get it.
+    const auto [tx, index]{SendAction(*pwallet, list, pwallet->chain().getDecisionListingFee(list.event_period + list.vote_periods))};
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", tx->GetHash().GetHex());
     result.pushKV("id", hivemind::MakeId(tx->GetHash(), index).GetHex());
@@ -187,12 +197,14 @@ RPCMethod createmarket()
                 {{"id", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED, "The id of a decision"}}},
             {"liquidity", RPCArg::Type::AMOUNT, RPCArg::Optional::NO, "The liquidity of the market maker in " + CURRENCY_UNIT + ": the larger, the less a trade moves the price"},
             {"feebps", RPCArg::Type::NUM, RPCArg::Default{50}, "The trading fee in hundredths of a percent"},
+            {"unchecked", RPCArg::Type::BOOL, RPCArg::Default{false}, "Send the transaction even if the market would not be opened as the chain stands, in which case the funding comes back"},
         },
         RPCResult{RPCResult::Type::OBJ, "", "",
         {
             {RPCResult::Type::STR_HEX, "txid", "The id of the transaction"},
             {RPCResult::Type::STR_HEX, "id", "The id of the market, once the transaction is mined"},
             {RPCResult::Type::STR_AMOUNT, "funding", "What the market maker was funded with"},
+            {RPCResult::Type::STR_AMOUNT, "fee", "The opening fee, which goes to the voters"},
             {RPCResult::Type::STR, "author", "The address of this wallet that gets what the market has left"},
         }},
         RPCExamples{HelpExampleCli("createmarket", "\"Rain in Paris\" '[\"decisionid\"]' 10")},
@@ -208,13 +220,20 @@ RPCMethod createmarket()
     open.liquidity = AmountFromValue(request.params[2]);
     if (open.liquidity < params.min_liquidity) throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("The liquidity must be at least %s", FormatMoney(params.min_liquidity)));
     open.fee_bps = request.params[3].isNull() ? 50 : request.params[3].getInt<uint16_t>();
+    // The chain would mine the transaction, open no market and pay the funding back: better to say why at once.
+    if (request.params[4].isNull() || !request.params[4].get_bool()) {
+        if (const std::string why{pwallet->chain().whyNoMarketOn(open.decisions)}; !why.empty()) throw JSONRPCError(RPC_INVALID_PARAMETER, why);
+    }
     open.author = NewAccount(*pwallet, "market author");
     const CAmount funding{hivemind::LmsrFunding(open.liquidity, size_t{1} << open.decisions.size())};
-    const auto [tx, index]{SendAction(*pwallet, open, funding)};
+    // And the opening fee, which goes to the voters: more, the more markets there are on the same first decision.
+    const CAmount fee{pwallet->chain().getMarketOpeningFee(open.decisions)};
+    const auto [tx, index]{SendAction(*pwallet, open, funding + fee)};
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", tx->GetHash().GetHex());
     result.pushKV("id", hivemind::MakeId(tx->GetHash(), index).GetHex());
     result.pushKV("funding", ValueFromAmount(funding));
+    result.pushKV("fee", ValueFromAmount(fee));
     result.pushKV("author", EncodeDestination(WitnessV0KeyHash{open.author}));
     return result;
 },
@@ -253,7 +272,7 @@ RPCMethod buyshares()
     buy.shares = AmountFromValue(request.params[2]);
     if (buy.shares <= 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "The number of shares must be positive");
     const auto quote{pwallet->chain().quoteMarketTrade(buy.market, buy.state, buy.shares)};
-    if (!quote) throw JSONRPCError(RPC_INVALID_PARAMETER, "The market cannot be traded in, or has no such state");
+    if (!quote) throw JSONRPCError(RPC_INVALID_PARAMETER, pwallet->chain().whyNoMarketTrade(buy.market, buy.state, buy.shares));
     const CAmount max_cost{request.params[3].isNull() ? *quote + *quote / 100 + 1 : AmountFromValue(request.params[3])};
     buy.account = request.params[4].isNull() ? NewAccount(*pwallet, "market shares") : ParseAccount(request.params[4]);
     const auto [tx, index]{SendAction(*pwallet, buy, max_cost)};
@@ -297,7 +316,8 @@ RPCMethod sellshares()
     if (sell.shares <= 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "The number of shares must be positive");
     sell.account = ParseAccount(request.params[3]);
     const auto quote{pwallet->chain().quoteMarketTrade(sell.market, sell.state, -sell.shares)};
-    if (!quote || *quote >= 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "The market cannot be traded in, or has not sold as many shares of this state");
+    if (!quote) throw JSONRPCError(RPC_INVALID_PARAMETER, pwallet->chain().whyNoMarketTrade(sell.market, sell.state, -sell.shares));
+    if (*quote >= 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "Selling these shares would bring nothing");
     const CAmount proceeds{-*quote};
     sell.min_proceeds = request.params[4].isNull() ? proceeds - proceeds / 100 : AmountFromValue(request.params[4]);
     const auto [tx, index]{SendAction(*pwallet, sell, 0, sell.account)};
@@ -313,7 +333,8 @@ RPCMethod transfervotecoin()
 {
     return RPCMethod{
         "transfervotecoin",
-        "Move reputation (votecoin) from an account of this wallet to another account." +
+        "Move reputation (votecoin) from an account of this wallet to another account.\n"
+        "Reputation does not move while votes are revealed (the last third of a period): a transfer mined then is ignored." +
         HELP_REQUIRING_PASSPHRASE,
         {
             {"from", RPCArg::Type::STR, RPCArg::Optional::NO, "The address of this wallet that holds the reputation"},
@@ -361,7 +382,12 @@ RPCMethod sealvote()
     hivemind::SealVote seal;
     seal.voter = ParseAccount(request.params[0]);
     seal.decision = ParseHashV(request.params[1], "decision");
-    seal.commitment = hivemind::VoteCommitment(seal.decision, ParseAnswer(request.params[2]), VoteSalt(*pwallet, seal.voter, seal.decision));
+    // A seal made while the votes are revealed would be counted in the next round, if the decision is
+    // put off -- and the salt it used is that of this round, which revealing makes public.
+    const auto sealable{pwallet->chain().getDecisionSealable(seal.decision)};
+    if (!sealable) throw JSONRPCError(RPC_INVALID_PARAMETER, "There is no open decision with this id");
+    if (!*sealable) throw JSONRPCError(RPC_MISC_ERROR, "The votes on this decision are being revealed: a vote can no longer be sealed in this period");
+    seal.commitment = hivemind::VoteCommitment(seal.decision, seal.voter, ParseAnswer(request.params[2]), VoteSalt(*pwallet, seal.voter, seal.decision));
     const auto [tx, index]{SendAction(*pwallet, seal, 0, seal.voter)};
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", tx->GetHash().GetHex());
@@ -393,6 +419,21 @@ RPCMethod revealvote()
     reveal.decision = ParseHashV(request.params[1], "decision");
     reveal.answer = ParseAnswer(request.params[2]);
     reveal.salt = VoteSalt(*pwallet, reveal.voter, reveal.decision);
+    // A vote sealed just before the decision was put off again carries the salt of the round before.
+    const auto commitment{pwallet->chain().getVoteCommitment(reveal.decision, reveal.voter)};
+    if (!commitment) throw JSONRPCError(RPC_INVALID_PARAMETER, "This account sealed no vote on the decision");
+    if (hivemind::VoteCommitment(reveal.decision, reveal.voter, reveal.answer, reveal.salt) != *commitment) {
+        const auto rolls{pwallet->chain().getDecisionRolls(reveal.decision)};
+        bool found{false};
+        if (rolls && *rolls > 0) {
+            const uint256 earlier{VoteSaltOfRound(*pwallet, reveal.voter, reveal.decision, *rolls - 1)};
+            if (hivemind::VoteCommitment(reveal.decision, reveal.voter, reveal.answer, earlier) == *commitment) {
+                reveal.salt = earlier;
+                found = true;
+            }
+        }
+        if (!found) throw JSONRPCError(RPC_INVALID_PARAMETER, "That is not the answer that was sealed");
+    }
     const auto [tx, index]{SendAction(*pwallet, reveal, 0)};
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", tx->GetHash().GetHex());

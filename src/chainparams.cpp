@@ -123,6 +123,10 @@ void ReadRegTestArgs(const ArgsManager& args, CChainParams::RegTestOptions& opti
         if (*slot < 0 || *slot > 0xFFFF) throw std::runtime_error("Invalid -sidechainslot");
         options.sidechain_slot = static_cast<uint32_t>(*slot);
     }
+    if (const auto seconds{args.GetIntArg("-hivemindperiodseconds")}) {
+        if (*seconds < 30) throw std::runtime_error("Invalid -hivemindperiodseconds: a period is at least 30 seconds");
+        options.hivemind_period_seconds = *seconds;
+    }
 
     HandleDeploymentArgs(args, options.dep_opts);
 }

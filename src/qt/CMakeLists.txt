@@ -123,8 +123,6 @@ add_library(bitcoinqt STATIC EXCLUDE_FROM_ALL
   chainactivity.h
   cryptotoolsdialog.cpp
   cryptotoolsdialog.h
-  graffitidialog.cpp
-  graffitidialog.h
   marketsdialog.cpp
   marketsdialog.h
   miningdialog.cpp
@@ -139,6 +137,10 @@ add_library(bitcoinqt STATIC EXCLUDE_FROM_ALL
   rpcconsole.h
   theme.cpp
   theme.h
+  sidebarmining.cpp
+  sidebarmining.h
+  themedframe.cpp
+  themedframe.h
   timestampdialog.cpp
   timestampdialog.h
   splashscreen.cpp

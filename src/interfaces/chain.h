@@ -207,9 +207,28 @@ public:
     //! node cannot be asked, or if it does not know the address.
     virtual util::Result<CScript> getMainchainScript(const std::string& address) = 0;
 
+    //! The slot this chain has on its mainchain, if it is a sidechain.
+    virtual std::optional<uint32_t> getSidechainSlot() = 0;
+
     //! What a trade in a prediction market costs now, fee included (negative
     //! when it pays); nothing if the trade cannot be made.
     virtual std::optional<CAmount> quoteMarketTrade(const uint256& market, uint8_t state, int64_t shares) = 0;
+
+    //! Why quoteMarketTrade() has no price for a trade; empty if it has one.
+    virtual std::string whyNoMarketTrade(const uint256& market, uint8_t state, int64_t shares) = 0;
+
+    //! Why a market on these decisions would not be opened by the next block; empty if it would be.
+    virtual std::string whyNoMarketOn(const std::vector<uint256>& decisions) = 0;
+    //! How often the decision was put off to be voted again; nullopt if there is no such decision.
+    virtual std::optional<uint8_t> getDecisionRolls(const uint256& decision) = 0;
+    //! Whether a vote on the decision can be sealed now: not once its votes are being revealed. Nullopt if it is not open.
+    virtual std::optional<bool> getDecisionSealable(const uint256& decision) = 0;
+    //! What listing a decision closing in `close_period` costs now.
+    virtual CAmount getDecisionListingFee(uint32_t close_period) = 0;
+    //! The fee for opening a market on `decisions` now, on top of its funding.
+    virtual CAmount getMarketOpeningFee(const std::vector<uint256>& decisions) = 0;
+    //! The commitment of the sealed vote of `voter` on `decision`, if there is one.
+    virtual std::optional<uint256> getVoteCommitment(const uint256& decision, const uint160& voter) = 0;
 
     //! The parameters of the prediction markets of this chain.
     virtual Consensus::HivemindParams getHivemindParams() = 0;

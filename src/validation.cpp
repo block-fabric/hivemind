@@ -4264,8 +4264,7 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, BlockValidatio
         // Not a reason to remember the block as invalid: the commitment may still come.
         if (!bmm_height) {
             // Bounded, as anyone can send headers that will never be committed to.
-            if (chainman.m_bmm_waiting.size() >= 1000) chainman.m_bmm_waiting.erase(chainman.m_bmm_waiting.begin());
-            chainman.m_bmm_waiting.emplace(hash, block);
+            chainman.AddBmmWaiting(block, /*peer=*/-1);
             return state.Invalid(BlockValidationResult::BLOCK_TIME_FUTURE, "bmm-unknown", "no mainchain block is known to commit to this block");
         }
         if (pindexPrev->pprev) {
@@ -6790,4 +6789,27 @@ util::Result<void> ChainstateManager::ActivateBestChains()
         }
     }
     return {};
+}
+
+void ChainstateManager::AddBmmWaiting(const CBlockHeader& header, int64_t peer) const
+{
+    AssertLockHeld(::cs_main);
+    static constexpr size_t MAX_BMM_WAITING{1000};
+    const uint256 hash{header.GetHash()};
+    if (const auto it{m_bmm_waiting.find(hash)}; it != m_bmm_waiting.end()) {
+        // A header without a peer was looked at by validation; the peer that sent it is the one to keep.
+        if (it->second.peer < 0) it->second.peer = peer;
+        return;
+    }
+    if (m_bmm_waiting.size() >= MAX_BMM_WAITING) {
+        std::map<int64_t, size_t> counts;
+        for (const auto& [_, waiting] : m_bmm_waiting) ++counts[waiting.peer];
+        const int64_t crowded{std::max_element(counts.begin(), counts.end(), [](const auto& a, const auto& b) { return a.second < b.second; })->first};
+        auto oldest{m_bmm_waiting.end()};
+        for (auto it{m_bmm_waiting.begin()}; it != m_bmm_waiting.end(); ++it) {
+            if (it->second.peer == crowded && (oldest == m_bmm_waiting.end() || it->second.sequence < oldest->second.sequence)) oldest = it;
+        }
+        m_bmm_waiting.erase(oldest);
+    }
+    m_bmm_waiting.emplace(hash, BmmWaiting{header, peer, m_bmm_waiting_sequence++});
 }

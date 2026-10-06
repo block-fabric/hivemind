@@ -2,11 +2,17 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <consensus/params.h>
+#include <primitives/transaction.h>
+#include <hivemind/state.h>
 #include <hivemind/math.h>
 
 #include <test/util/setup_common.h>
+#include <tinyformat.h>
 
 #include <boost/test/unit_test.hpp>
+
+#include <chrono>
 
 #include <numeric>
 
@@ -18,6 +24,9 @@ using hivemind::OUTCOME_ROLL;
 using hivemind::Resolve;
 using hivemind::VOTE_MISSING;
 using hivemind::VOTE_UNKNOWN;
+using hivemind::Account;
+using hivemind::Id;
+using hivemind::VoteCommitment;
 
 BOOST_FIXTURE_TEST_SUITE(hivemind_tests, BasicTestingSetup)
 
@@ -232,6 +241,280 @@ BOOST_AUTO_TEST_CASE(votes_conserve_reputation)
         const auto again{Resolve(reputation, votes, scaled, 1, 10, ONE / 5)};
         BOOST_CHECK(again.reputation == result.reputation && again.outcomes == result.outcomes);
     }
+}
+
+BOOST_AUTO_TEST_CASE(votes_many_decisions_no_overflow)
+{
+    // A holder of most of the reputation and two small voters on many decisions: the products
+    // in the resolution stay within 128 bits, so it is quick and exact (it once overflowed and
+    // took minutes from about 1200 decisions on).
+    const size_t decisions{1500};
+    const std::vector<int64_t> reputation{10'000'000'000 - 2000, 1000, 1000};
+    std::vector<std::vector<int64_t>> votes(3, std::vector<int64_t>(decisions, VOTE_MISSING));
+    for (size_t j{0}; j < decisions; ++j) {
+        votes[1][j] = (j % 2) ? ONE : 0;
+        votes[2][j] = (j % 2) ? 0 : ONE;
+    }
+    const auto start{std::chrono::steady_clock::now()};
+    const auto result{Resolve(reputation, votes, std::vector<bool>(decisions, false), 1, 10, ONE / 5)};
+    BOOST_CHECK(std::chrono::steady_clock::now() - start < std::chrono::seconds{30});
+    BOOST_CHECK_EQUAL(std::accumulate(result.reputation.begin(), result.reputation.end(), int64_t{0}), 10'000'000'000);
+    for (const int64_t r : result.reputation) BOOST_CHECK(r >= 0);
+}
+
+BOOST_AUTO_TEST_CASE(votes_rolled_decisions_count_for_nothing)
+{
+    // Decisions that nobody can answer are voted again: whoever did not vote on them loses
+    // nothing, and saying that they cannot be answered earns nothing.
+    std::vector<std::vector<int64_t>> votes{{ONE}, {ONE}};
+    for (int junk{0}; junk < 50; ++junk) {
+        votes[0].push_back(VOTE_MISSING);
+        votes[1].push_back(VOTE_UNKNOWN);
+    }
+    const auto result{Resolve({9900, 100}, votes, std::vector<bool>(51, false), 1, 10, ONE / 5)};
+    BOOST_CHECK((result.reputation == std::vector<int64_t>{9900, 100}));
+    for (size_t j{1}; j < 51; ++j) BOOST_CHECK_EQUAL(result.outcomes[j], OUTCOME_ROLL);
+}
+
+BOOST_AUTO_TEST_CASE(votes_unknown_on_an_answered_decision)
+{
+    // Saying that the answer cannot be known, of a decision that gets one, is no vote: it
+    // cannot be wrong, so it does not earn what a vote earns.
+    const auto result{Resolve({4000, 3000, 3000}, {{VOTE_UNKNOWN}, {ONE}, {ONE}}, {false}, 1, 10, ONE / 5)};
+    BOOST_CHECK_EQUAL(result.outcomes[0], ONE);
+    BOOST_CHECK((result.reputation == std::vector<int64_t>{3600, 3200, 3200}));
+    BOOST_CHECK_EQUAL(result.participation[0], 0);
+}
+
+BOOST_AUTO_TEST_CASE(votes_few_voters_take_little)
+{
+    // One small voter alone in a batch: the many who did not vote lose no more in all than what
+    // the voter put at stake, not a tenth of their reputation.
+    const auto result{Resolve({100, 9900}, {{ONE}, {VOTE_MISSING}}, {false}, 1, 10, ONE / 5)};
+    BOOST_CHECK_EQUAL(result.outcomes[0], ONE);
+    BOOST_CHECK((result.reputation == std::vector<int64_t>{110, 9890}));
+}
+
+BOOST_AUTO_TEST_CASE(votes_quorum)
+{
+    // Too little reputation answered: the decision is voted again, and nobody loses anything.
+    const auto result{Resolve({1000, 9000}, {{ONE}, {VOTE_MISSING}}, {false}, 1, 10, ONE / 5, /*quorum=*/2000)};
+    BOOST_CHECK_EQUAL(result.outcomes[0], OUTCOME_ROLL);
+    BOOST_CHECK((result.reputation == std::vector<int64_t>{1000, 9000}));
+    BOOST_CHECK_EQUAL(Resolve({3000, 7000}, {{ONE}, {VOTE_MISSING}}, {false}, 1, 10, ONE / 5, 2000).outcomes[0], ONE);
+}
+
+BOOST_AUTO_TEST_CASE(votes_last_round_unknown_is_no_vote)
+{
+    // Saying the answer cannot be known puts a decision off; in its last round it counts for
+    // nothing, so that it cannot be used to force a tie at no risk.
+    const std::vector<std::vector<int64_t>> votes{{VOTE_UNKNOWN}, {ONE}};
+    BOOST_CHECK_EQUAL(Resolve({6000, 4000}, votes, {false}, 1, 10, ONE / 5).outcomes[0], OUTCOME_ROLL);
+    BOOST_CHECK_EQUAL(Resolve({6000, 4000}, votes, {false}, 1, 10, ONE / 5, 0, {true}).outcomes[0], ONE);
+}
+
+BOOST_AUTO_TEST_CASE(vote_commitment_names_the_voter)
+{
+    // A sealed vote cannot be copied: the same answer and salt commit to another value for another voter.
+    const Id decision{uint256{7}};
+    const uint256 salt{uint256{9}};
+    BOOST_CHECK(VoteCommitment(decision, Account{}, 1, salt) != VoteCommitment(decision, Account{uint160::FromHex("0101010101010101010101010101010101010101").value()}, 1, salt));
+}
+
+namespace {
+//! A transaction that asks for `action`, burning `value` for it.
+CTransaction ActionTx(const hivemind::Action& action, CAmount value, uint8_t salt)
+{
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vin[0].prevout = COutPoint{Txid::FromUint256(uint256{salt}), 0};
+    tx.vout.emplace_back(value, hivemind::ActionScript(action));
+    return CTransaction{tx};
+}
+
+hivemind::ListDecision Listing(uint32_t event_period, uint8_t n)
+{
+    hivemind::ListDecision list;
+    list.event_period = event_period;
+    list.text = strprintf("decision %u", unsigned(n));
+    return list;
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(listing_fee_rises_with_the_period)
+{
+    // Filling a period costs more the fuller it gets: the fee doubles every LISTING_FEE_STEP decisions.
+    Consensus::HivemindParams params;
+    params.period_blocks = 6;
+    hivemind::State state;
+    std::vector<CTxOut> payouts;
+    state.BeginBlock(1, 0, params, payouts);
+    std::string reason;
+    const uint32_t event{2}, close{event + 1};
+    BOOST_CHECK_EQUAL(state.ListingFee(close, params), params.listing_fee);
+    for (uint8_t i{0}; i < hivemind::LISTING_FEE_STEP; ++i) {
+        BOOST_REQUIRE_MESSAGE(state.ApplyTx(ActionTx(Listing(event, i), params.listing_fee, i), 1, params, payouts, reason), reason);
+    }
+    BOOST_CHECK(payouts.empty());
+    BOOST_CHECK_EQUAL(state.ListingFee(close, params), 2 * params.listing_fee);
+    // Paying the old fee now lists nothing, and the coins come back.
+    BOOST_REQUIRE(state.ApplyTx(ActionTx(Listing(event, 50), params.listing_fee, 50), 1, params, payouts, reason));
+    BOOST_CHECK_EQUAL(payouts.size(), 1U);
+    BOOST_CHECK_EQUAL(state.Decisions().size(), hivemind::LISTING_FEE_STEP);
+    // Another period is as cheap as ever.
+    BOOST_CHECK_EQUAL(state.ListingFee(close + 1, params), params.listing_fee);
+}
+
+BOOST_AUTO_TEST_CASE(stall_does_not_use_up_decisions)
+{
+    // The chain skips the whole period in which a decision was to be revealed: the decision is
+    // voted on later, not put off, and not forced to a tie.
+    Consensus::HivemindParams params;
+    params.period_blocks = 6;
+    hivemind::State state;
+    std::vector<CTxOut> payouts;
+    std::string reason;
+    state.BeginBlock(1, 0, params, payouts);
+    BOOST_REQUIRE(state.ApplyTx(ActionTx(Listing(1, 1), params.listing_fee, 1), 1, params, payouts, reason));
+    const auto id{state.Decisions().begin()->first};
+    BOOST_REQUIRE_EQUAL(state.Decisions().at(id).close_period, 2U);
+    // Several periods go by without a block: from period 0 straight into period 9.
+    state.BeginBlock(9 * 6, 0, params, payouts);
+    const hivemind::Decision& decision{state.Decisions().at(id)};
+    BOOST_CHECK(!decision.resolved);
+    BOOST_CHECK_EQUAL(decision.rolls, 0);
+    BOOST_CHECK_GE(decision.close_period, 9U);
+}
+
+BOOST_AUTO_TEST_CASE(refunds_keep_a_fee)
+{
+    // An action that cannot be done gives its coins back, less a small part for the voters; and a
+    // purchase has to be worth paying out, so that refunds cannot flood the queue of payouts.
+    Consensus::HivemindParams params;
+    params.period_blocks = 6;
+    hivemind::State state;
+    std::vector<CTxOut> payouts;
+    std::string reason;
+    state.BeginBlock(1, 0, params, payouts);
+    hivemind::BuyShares buy;
+    buy.market = uint256{0x99};
+    buy.shares = ONE;
+    BOOST_CHECK(!hivemind::CheckTx(ActionTx(buy, hivemind::MIN_PURCHASE - 1, 1), params, reason));
+    BOOST_CHECK_EQUAL(reason, "bad-hm-payment");
+    BOOST_REQUIRE(state.ApplyTx(ActionTx(buy, 50000, 1), 1, params, payouts, reason));
+    BOOST_REQUIRE_EQUAL(payouts.size(), 1U);
+    BOOST_CHECK_EQUAL(payouts[0].nValue, 50000 - hivemind::REFUND_FEE);
+
+    CMutableTransaction many;
+    many.vin.resize(1);
+    many.vin[0].prevout = COutPoint{Txid::FromUint256(uint256{7}), 0};
+    for (size_t i{0}; i <= hivemind::MAX_ACTIONS_PER_TX; ++i) many.vout.emplace_back(50000, hivemind::ActionScript(buy));
+    BOOST_CHECK(!hivemind::CheckTx(CTransaction{many}, params, reason));
+    BOOST_CHECK_EQUAL(reason, "bad-hm-too-many-actions");
+}
+
+BOOST_AUTO_TEST_CASE(market_fee_counts_every_decision)
+{
+    // The fee to open a market rises with the markets on any of its decisions, in any place, and
+    // goes to the voters of its decisions.
+    Consensus::HivemindParams params;
+    params.period_blocks = 6;
+    hivemind::State state;
+    std::vector<CTxOut> payouts;
+    std::string reason;
+    state.BeginBlock(1, 0, params, payouts);
+    std::vector<hivemind::Id> ids;
+    for (uint8_t i{0}; i < 5; ++i) {
+        const CTransaction tx{ActionTx(Listing(2, i), params.listing_fee, i)};
+        BOOST_REQUIRE(state.ApplyTx(tx, 1, params, payouts, reason));
+        ids.push_back(hivemind::MakeId(tx.GetHash(), 0));
+    }
+    const hivemind::Id d{ids[0]};
+    const auto open{[&](std::vector<hivemind::Id> decisions, uint8_t salt) {
+        hivemind::OpenMarket market;
+        market.decisions = decisions;
+        market.liquidity = params.min_liquidity;
+        market.text = "market";
+        const CAmount fee{state.MarketFee(decisions, params)};
+        const CAmount funding{hivemind::LmsrFunding(market.liquidity, size_t{1} << decisions.size())};
+        BOOST_REQUIRE(state.ApplyTx(ActionTx(market, funding + fee, salt), 1, params, payouts, reason));
+        return fee;
+    }};
+    const CAmount before{state.Decisions().at(d).fee};
+    for (uint8_t i{1}; i <= hivemind::MARKET_FEE_STEP; ++i) open({ids[i], d}, 100 + i);
+    BOOST_CHECK_EQUAL(state.MarketFee({d}, params), 2 * params.listing_fee);
+    // The fees of the markets that have d second went to d and to their first decision, half each.
+    BOOST_CHECK_EQUAL(state.Decisions().at(d).fee, before + hivemind::MARKET_FEE_STEP * (params.listing_fee / 2));
+}
+
+BOOST_AUTO_TEST_CASE(catch_up_does_not_use_up_rolls)
+{
+    // The chain reaches the reveal phase of a decision, nobody reveals, and the next block comes
+    // several periods later: the decision is put off once, into a period with time for sealing,
+    // not put off again in every period skipped until it is forced to a tie.
+    Consensus::HivemindParams params;
+    params.period_blocks = 6;
+    hivemind::State state;
+    std::vector<CTxOut> payouts;
+    std::string reason;
+    state.BeginBlock(1, 0, params, payouts);
+    BOOST_REQUIRE(state.ApplyTx(ActionTx(Listing(1, 1), params.listing_fee, 1), 1, params, payouts, reason));
+    const auto id{state.Decisions().begin()->first};
+    BOOST_REQUIRE_EQUAL(state.Decisions().at(id).close_period, 2U);
+    // A block in the time for sealing of period 2, then one in its reveal phase.
+    state.BeginBlock(2 * 6, 0, params, payouts);
+    state.BeginBlock(2 * 6 + 4, 0, params, payouts);
+    BOOST_REQUIRE_EQUAL(state.Decisions().at(id).close_period, 2U);
+    BOOST_REQUIRE(state.RevealPhase());
+    state.BeginBlock(9 * 6, 0, params, payouts);
+    const hivemind::Decision& decision{state.Decisions().at(id)};
+    BOOST_CHECK(!decision.resolved);
+    BOOST_CHECK_EQUAL(decision.rolls, 1);
+    BOOST_CHECK_EQUAL(decision.close_period, 9U);
+}
+
+BOOST_AUTO_TEST_CASE(clock_and_periods)
+{
+    // Periods of mainchain time, as on the networks: the last third of each is for revealing votes.
+    Consensus::HivemindParams params;
+    params.period_blocks = 0;
+    params.period_seconds = 600;
+    params.start_time = 1000;
+    BOOST_CHECK_EQUAL(hivemind::ClockAt(7, 0, params).period, 0U);
+    BOOST_CHECK_EQUAL(hivemind::ClockAt(7, 1000, params).period, 0U);
+    BOOST_CHECK_EQUAL(hivemind::ClockAt(7, 1000 + 599, params).period, 0U);
+    BOOST_CHECK_EQUAL(hivemind::ClockAt(7, 1000 + 600, params).period, 1U);
+    BOOST_CHECK_EQUAL(hivemind::ClockAt(99, 1000 + 3 * 600 + 399, params).period, 3U);
+    BOOST_CHECK(!hivemind::ClockAt(99, 1000 + 3 * 600 + 399, params).reveal_phase);
+    BOOST_CHECK(hivemind::ClockAt(99, 1000 + 3 * 600 + 400, params).reveal_phase);
+    // The height has no say.
+    BOOST_CHECK_EQUAL(hivemind::ClockAt(1, 1000 + 3 * 600, params).period, hivemind::ClockAt(100000, 1000 + 3 * 600, params).period);
+
+    // Periods of blocks, for tests.
+    params.period_blocks = 6;
+    BOOST_CHECK_EQUAL(hivemind::ClockAt(5, 999999, params).period, 0U);
+    BOOST_CHECK_EQUAL(hivemind::ClockAt(6, 0, params).period, 1U);
+    BOOST_CHECK(!hivemind::ClockAt(9, 0, params).reveal_phase);
+    BOOST_CHECK(hivemind::ClockAt(10, 0, params).reveal_phase);
+
+    // A state follows the clock forward, and never back when the time of the mainchain does.
+    params.period_blocks = 0;
+    hivemind::State state;
+    std::vector<CTxOut> payouts;
+    state.BeginBlock(1, 1000 + 5 * 600 + 500, params, payouts);
+    BOOST_CHECK_EQUAL(state.Period(), 5U);
+    BOOST_CHECK(state.RevealPhase());
+    // Nor back to sealing, once votes are revealed: a vote could otherwise be sealed again after
+    // others were shown. Neither a time of an earlier period nor one earlier in the period does that.
+    state.BeginBlock(2, 1000 + 4 * 600 + 500, params, payouts);
+    BOOST_CHECK_EQUAL(state.Period(), 5U);
+    BOOST_CHECK(state.RevealPhase());
+    state.BeginBlock(2, 1000 + 5 * 600 + 100, params, payouts);
+    BOOST_CHECK(state.RevealPhase());
+    state.BeginBlock(3, 1000 + 6 * 600, params, payouts);
+    BOOST_CHECK_EQUAL(state.Period(), 6U);
+    BOOST_CHECK(!state.RevealPhase());
+    BOOST_CHECK(payouts.empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

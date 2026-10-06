@@ -59,6 +59,28 @@ inline constexpr unsigned char TAG[4]{0xDB, 0x48, 0x56, 0x4D};
 /** Number of blocks or parts of a period, out of three, in which votes are sealed; they are revealed in the rest. */
 inline constexpr int SEAL_PARTS{2};
 
+/** Most decisions whose vote closes in one period; a listing beyond that is refused and its fee given back. */
+inline constexpr size_t MAX_DECISIONS_PER_PERIOD{100};
+/** The listing fee doubles for every this many decisions closing in the same period already. */
+inline constexpr size_t LISTING_FEE_STEP{10};
+/** The fee to open a market doubles for every this many unsettled markets on its first decision already. */
+inline constexpr size_t MARKET_FEE_STEP{4};
+/** Most voters a resolution weighs one by one: holders of less than this share of the reputation are weighed together. */
+inline constexpr int64_t MAX_VOTERS{10000};
+/** Periods after which a resolved decision, or a settled market, leaves the state. */
+inline constexpr uint32_t PRUNE_AFTER_PERIODS{30};
+/**
+ * Share of the reputation, in percent, that has to answer a decision for it to be resolved; with
+ * fewer answers it is voted on again. Nobody loses reputation for not voting on so few.
+ */
+inline constexpr int64_t QUORUM_PERCENT{20};
+/** Least amount a purchase of shares may pay: what cannot be bought is given back, and payouts are not free. */
+inline constexpr CAmount MIN_PURCHASE{10000};
+/** What is kept, for the voters, of coins given back for an action that could not be done. */
+inline constexpr CAmount REFUND_FEE{1000};
+/** Most actions in one transaction. */
+inline constexpr size_t MAX_ACTIONS_PER_TX{16};
+
 //
 // What transactions can ask for. Each is an OP_RETURN output with one data
 // push: TAG, a byte for the kind, and the fields.
@@ -176,7 +198,8 @@ std::optional<Action> ParseActionScript(const CScript& script);
  * signature is of no use in another transaction.
  */
 std::string ActionMessage(const Action& action, const COutPoint& first_input);
-uint256 VoteCommitment(const Id& decision, int64_t answer, const uint256& salt);
+/** What a sealed vote commits to. It names the voter, so that nobody can seal someone else's vote as their own. */
+uint256 VoteCommitment(const Id& decision, const Account& voter, int64_t answer, const uint256& salt);
 /** The identifier of the decision or market made by output `n` of transaction `txid`. */
 Id MakeId(const Txid& txid, uint32_t n);
 
@@ -212,8 +235,10 @@ struct Market {
     //! Trading fees collected, to be shared out when the market is settled.
     CAmount fees{0};
     bool settled{false};
+    //! The period that settled it.
+    uint32_t settled_period{0};
 
-    SERIALIZE_METHODS(Market, obj) { READWRITE(obj.opening, obj.height, obj.shares, obj.treasury, obj.fees, obj.settled); }
+    SERIALIZE_METHODS(Market, obj) { READWRITE(obj.opening, obj.height, obj.shares, obj.treasury, obj.fees, obj.settled, obj.settled_period); }
     friend bool operator==(const Market& a, const Market& b);
 };
 
@@ -252,6 +277,66 @@ struct Clock {
 
 Clock ClockAt(int height, int64_t main_time, const Consensus::HivemindParams& params);
 
+namespace detail {
+template <typename Stream, typename Key, typename Value>
+void WriteChanges(Stream& s, const std::vector<std::pair<Key, std::optional<Value>>>& changes)
+{
+    WriteCompactSize(s, changes.size());
+    for (const auto& [key, value] : changes) {
+        s << key << value.has_value();
+        if (value) s << *value;
+    }
+}
+template <typename Stream, typename Key, typename Value>
+void ReadChanges(Stream& s, std::vector<std::pair<Key, std::optional<Value>>>& changes)
+{
+    changes.clear();
+    const uint64_t count{ReadCompactSize(s)};
+    for (uint64_t i{0}; i < count; ++i) {
+        Key key;
+        bool has_value;
+        s >> key >> has_value;
+        std::optional<Value> value;
+        if (has_value) s >> value.emplace();
+        changes.emplace_back(std::move(key), std::move(value));
+    }
+}
+} // namespace detail
+
+/** What a block changed in the State: the earlier values of what changed, nullopt where an entry was added. */
+struct StateUndo {
+    bool started{false};
+    uint32_t period{0};
+    bool reveal_phase{false};
+    CAmount voter_pot{0};
+    std::vector<std::pair<Id, std::optional<Decision>>> decisions;
+    std::vector<std::pair<Id, std::optional<Market>>> markets;
+    std::vector<std::pair<PositionKey, std::optional<int64_t>>> positions;
+    std::vector<std::pair<VoteKey, std::optional<Vote>>> votes;
+    std::vector<std::pair<Account, std::optional<int64_t>>> reputation;
+
+    template <typename Stream>
+    void Serialize(Stream& s) const
+    {
+        s << started << period << reveal_phase << voter_pot;
+        detail::WriteChanges(s, decisions);
+        detail::WriteChanges(s, markets);
+        detail::WriteChanges(s, positions);
+        detail::WriteChanges(s, votes);
+        detail::WriteChanges(s, reputation);
+    }
+    template <typename Stream>
+    void Unserialize(Stream& s)
+    {
+        s >> started >> period >> reveal_phase >> voter_pot;
+        detail::ReadChanges(s, decisions);
+        detail::ReadChanges(s, markets);
+        detail::ReadChanges(s, positions);
+        detail::ReadChanges(s, votes);
+        detail::ReadChanges(s, reputation);
+    }
+};
+
 class State
 {
 public:
@@ -285,8 +370,22 @@ public:
 
     /** What buying (positive) or selling (negative) `shares` of a state of a market costs now, fee included; nothing if it cannot be traded. */
     std::optional<CAmount> Quote(const Id& market, uint8_t state, int64_t shares) const;
+    /** Why Quote() has no price for this trade, in words for the one who wanted it; empty if it has one. */
+    std::string WhyNoTrade(const Id& market, uint8_t state, int64_t shares) const;
     /** Whether a market can be traded in now. */
     bool TradingOpen(const Market& market) const;
+    /**
+     * What listing a decision whose vote closes in `close_period` costs now: the listing fee, doubled
+     * for every LISTING_FEE_STEP decisions closing then already, so that filling a period costs
+     * more the fuller it gets, rather than being cheap and keeping everyone else out.
+     */
+    CAmount ListingFee(uint32_t close_period, const Consensus::HivemindParams& params) const;
+    /**
+     * The fee for opening a market on `decisions`, on top of its funding, which goes to the voters
+     * of its decisions: the listing fee, doubled for every MARKET_FEE_STEP unsettled markets on the
+     * one of its decisions that has the most.
+     */
+    CAmount MarketFee(const std::vector<Id>& decisions, const Consensus::HivemindParams& params) const;
 
     SERIALIZE_METHODS(State, obj)
     {
@@ -294,8 +393,20 @@ public:
     }
     friend bool operator==(const State& a, const State& b);
 
+    /** What reverts `after` to `before`: the entries that differ, and the rest. */
+    static StateUndo Diff(const State& before, const State& after);
+    void Revert(const StateUndo& undo);
+
 private:
-    void Resolve(uint32_t new_period, const Consensus::HivemindParams& params, std::map<Account, CAmount>& paid);
+    /** Drop decisions and markets that are long done with. */
+    void Prune();
+    /** Decisions not resolved whose vote closes in `close_period`. */
+    size_t ClosingIn(uint32_t close_period) const;
+    /**
+     * Resolve the decisions whose vote closed before `new_period`. A decision voted on again is
+     * voted on from `first_open` at the earliest: the first period that still has a time for sealing.
+     */
+    void Resolve(uint32_t new_period, uint32_t first_open, const Consensus::HivemindParams& params, std::map<Account, CAmount>& paid);
     void Settle(const Id& id, Market& market, std::map<Account, CAmount>& paid);
 
     //! Whether the reputation has been given to the account that holds it at the start.

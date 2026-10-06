@@ -169,6 +169,7 @@ BASE_SCRIPTS = [
     'wallet_anchor.py',
     'feature_reindex.py',
     'feature_sidechain.py',
+    'feature_sidechain_network.py',
     'feature_hivemind.py',
     'rpc_setgenerate.py',
     'feature_reindex_readonly.py',

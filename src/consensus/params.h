@@ -95,7 +95,7 @@ struct HivemindParams {
     /** Most periods a decision can be voted on for. */
     uint16_t max_vote_periods{90};
     /** How many periods ahead of the current one the event of a decision can be. */
-    uint32_t max_periods_ahead{365};
+    uint32_t max_periods_ahead{3650};
     /** How often a decision whose answer was not known is voted again before it is settled as a tie. */
     uint8_t max_rolls{3};
     /** What listing a decision costs, in the smallest unit; it goes to those who vote on it. */
@@ -143,7 +143,7 @@ struct SidechainParams {
  */
 struct DrivechainParams {
     /** Number of sidechain slots. Slots at or above this number are not subject to any drivechain rule. */
-    uint32_t max_sidechains{512};
+    uint32_t max_sidechains{256};
     /** Age at which a proposal for an empty slot activates. */
     int activation_period{7200};
     /** A proposal is rejected once it has gone this many blocks without an ack. */

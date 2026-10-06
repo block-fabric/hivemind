@@ -241,7 +241,7 @@ public:
         // TODO before launch: the hash of the key that holds the reputation at the start. Until it
         // is set nobody can vote on this network.
         consensus.sidechain.hivemind.genesis_account = uint160{};
-        consensus.coinbase_maturity = 6; // deposits and fees can be spent after six blocks
+        consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
 
@@ -340,9 +340,13 @@ public:
         // Hivemind on the Chains testnet, in slot 9.
         MakeSidechain({.slot = 9, .genesis_message = "Hivemind testnet", .genesis_time = 1790900000,
                        .message_start = {0x68, 0x76, 0x6d, 0x02}, .default_port = 19855, .bech32_hrp = "thm"});
+        // The mainchain of the test network votes on a withdrawal bundle within 600 blocks.
+        consensus.sidechain.bundle_retry_delay = 20;
         consensus.sidechain.hivemind.start_time = 1790900000;
+        // A test network goes through the voting in hours, not days.
+        consensus.sidechain.hivemind.period_seconds = 60 * 60;
         consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("b8d111d9b7f7e29ec30b67f26c5922afa5b2d744");
-        consensus.coinbase_maturity = 6;
+        consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
 
@@ -452,7 +456,7 @@ public:
                        .message_start = {0x68, 0x76, 0x6d, 0x03}, .default_port = 39855, .bech32_hrp = "thm"});
         consensus.sidechain.hivemind.start_time = 1790900000;
         consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("864b263d30715ac8e9fbda1147d556a768b5a1b4");
-        consensus.coinbase_maturity = 6;
+        consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
 
@@ -513,9 +517,15 @@ public:
             consensus.sidechain.bundle_retry_delay = 5;
             // A sidechain has no sidechains of its own.
             consensus.drivechain.max_sidechains = 0;
-            consensus.coinbase_maturity = 2;
+            consensus.coinbase_maturity = 0;
             // Markets with periods of a few blocks: four to seal votes, two to reveal them.
             consensus.sidechain.hivemind.period_blocks = 6;
+            // Or periods of a length to try the markets out by hand, counted from the beginning of time.
+            if (opts.hivemind_period_seconds) {
+                consensus.sidechain.hivemind.period_blocks = 0;
+                consensus.sidechain.hivemind.period_seconds = *opts.hivemind_period_seconds;
+                consensus.sidechain.hivemind.start_time = 0;
+            }
             consensus.sidechain.hivemind.max_rolls = 1;
             consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("c22f79ea0ef7374ef0cc03ce91f791063a5e2032");
         }
@@ -571,7 +581,8 @@ public:
         base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x35, 0x87, 0xCF};
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x35, 0x83, 0x94};
 
-        bech32_hrp = "rchn";
+        // Its own, so that an address of another chain is not taken for one of this chain.
+        bech32_hrp = "rhm";
 
         // Copied from Testnet4.
         m_headers_sync_params = HeadersSyncParams{

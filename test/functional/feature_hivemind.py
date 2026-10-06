@@ -6,7 +6,7 @@
 
 from decimal import Decimal
 
-from feature_sidechain import ACTIVATION_PERIOD, COINBASE_MATURITY, SLOT, SidechainTest
+from feature_sidechain import ACTIVATION_PERIOD, SLOT, SidechainTest
 from test_framework.descriptors import descsum_create
 from test_framework.util import assert_equal, assert_greater_than, assert_raises_rpc_error
 
@@ -16,6 +16,7 @@ PERIOD_BLOCKS = 6
 # Blocks of a period in which votes are sealed; they are revealed in the rest.
 SEAL_BLOCKS = 4
 LISTING_FEE = Decimal("0.001")
+REFUND_FEE = Decimal("0.00001")
 
 
 class HivemindTest(SidechainTest):
@@ -60,7 +61,8 @@ class HivemindTest(SidechainTest):
         main.createsidechaindeposit(SLOT, side.getnewaddress(), 60)
         main.createsidechaindeposit(SLOT, other.getnewaddress(), 40)
         self.mine_main()
-        for _ in range(COINBASE_MATURITY + 1):
+        # A few blocks, so that the periods of the markets have a past.
+        for _ in range(3):
             self.bmm()
         # Several coins each, so that a wallet can make several transactions in a block.
         side.sendmany("", {side.getnewaddress(): 5 for _ in range(10)})
@@ -76,6 +78,9 @@ class HivemindTest(SidechainTest):
         bob = other.getnewaddress(address_type="bech32")
         carol = other.getnewaddress(address_type="bech32")
         assert_raises_rpc_error(-4, "cannot sign for the account", other.transfervotecoin, alice, bob, 30)
+        # Reputation does not move while votes are revealed: a transfer mined then is ignored.
+        period, phase = self.next_clock()
+        self.advance(period + 1 if phase == "reveal" else period)
         side.transfervotecoin(alice, bob, 30)
         side.transfervotecoin(alice, carol, 30)
         # More than the account holds: mined, and nothing happens.
@@ -83,8 +88,15 @@ class HivemindTest(SidechainTest):
         side.transfervotecoin(alice, bob, 41)
         self.mine_txs()
         assert_equal(self.reputation(), {alice: 40, bob: 30, carol: 30})
+        period, phase = self.next_clock()
+        self.advance(period, "reveal")
+        side.transfervotecoin(alice, bob, 1)
+        self.mine_txs()
+        assert_equal(self.reputation(), {alice: 40, bob: 30, carol: 30})
 
         self.log.info("List decisions")
+        # From the start of a period, so that what follows does not depend on how many blocks came before.
+        self.advance(self.next_clock()[0] + 1)
         period = self.next_clock()[0]
         event = period + 1
         assert_equal(self.info()["listingfee"], LISTING_FEE)
@@ -94,7 +106,8 @@ class HivemindTest(SidechainTest):
         # A decision whose event is in the past is not listed, and the fee comes back.
         past = side.createdecision("Did it rain?", period - 1)
         block = self.mine_txs()
-        refunds = [out for out in block["tx"][0]["vout"] if out["value"] == LISTING_FEE]
+        # Less what is kept for the voters.
+        refunds = [out for out in block["tx"][0]["vout"] if out["value"] == LISTING_FEE - REFUND_FEE]
         assert_equal(len(refunds), 1)
         decisions = {d["id"]: d for d in side.listdecisions()}
         assert_equal(set(decisions), {rain["id"], degrees["id"], late["id"]})
@@ -110,12 +123,14 @@ class HivemindTest(SidechainTest):
         market = side.createmarket("Rain", [rain["id"]], 10, 100)
         assert_equal(market["funding"], Decimal("6.93147181"))
         both = side.createmarket("Rain and degrees", [rain["id"], degrees["id"]], 5)
-        nothing = side.createmarket("About nothing", ["ab" * 32], 5)
+        # The wallet says at once why a market would not be opened, unless it is told not to look.
+        assert_raises_rpc_error(-8, "There is no decision " + "ab" * 32, side.createmarket, "About nothing", ["ab" * 32], 5)
+        nothing = side.createmarket("About nothing", ["ab" * 32], 5, 50, True)
         block = self.mine_txs()
         # The market on a decision that does not exist was not opened, and its funding came back.
         assert_equal(set(m["id"] for m in side.listmarkets()), {market["id"], both["id"]})
         assert nothing["id"] not in [m["id"] for m in side.listmarkets()]
-        assert_equal(len([out for out in block["tx"][0]["vout"] if out["value"] == nothing["funding"]]), 1)
+        assert_equal(len([out for out in block["tx"][0]["vout"] if out["value"] == nothing["funding"] + nothing["fee"] - REFUND_FEE]), 1)
         rain_market = side.getmarket(market["id"])
         assert_equal(rain_market["status"], "trading")
         assert_equal(rain_market["treasury"], market["funding"])
@@ -139,14 +154,14 @@ class HivemindTest(SidechainTest):
         assert_greater_than(rain_market["states"][1]["price"], Decimal("0.57"))
         assert_equal(sum(s["price"] for s in rain_market["states"]), 1)
         # What was put up beyond the cost comes back with the coinbase, which takes a while to mature.
-        for _ in range(COINBASE_MATURITY):
+        for _ in range(2):
             self.bmm()
         assert_equal(other.getbalance(), balance - quote - fee)
 
         # A purchase that the price has moved away from does not happen.
         cheap = other.buyshares(market["id"], 1, 5, Decimal("0.1"), dave)
         block = self.mine_txs()
-        assert_equal(len([out for out in block["tx"][0]["vout"] if out["value"] == Decimal("0.1")]), 1)
+        assert_equal(len([out for out in block["tx"][0]["vout"] if out["value"] == Decimal("0.1") - REFUND_FEE]), 1)
         assert_equal(other.listpositions(dave)[0]["shares"], 3)
         del cheap
 
@@ -173,7 +188,7 @@ class HivemindTest(SidechainTest):
         self.mine_txs()
         assert_equal(side.getmarket(market["id"])["status"], "closed")
         assert_equal(other.listpositions(dave), [{"market": market["id"], "state": 1, "shares": 2}])
-        assert_raises_rpc_error(-8, "cannot be traded", other.quotetrade, market["id"], 0, 1)
+        assert_raises_rpc_error(-8, "Trading in the market \"Rain\" is closed", other.quotetrade, market["id"], 0, 1)
         del closed
         assert_equal(side.getdecision(rain["id"])["status"], "voting")
 
@@ -203,8 +218,8 @@ class HivemindTest(SidechainTest):
         assert_equal(self.next_clock(), (event + 1, "reveal"))
         side.revealvote(alice, rain["id"], "yes")
         other.revealvote(bob, rain["id"], "yes")
-        # Only the vote that was sealed can be revealed.
-        other.revealvote(carol, rain["id"], "yes")
+        # Only the vote that was sealed can be revealed: the wallet says so before the chain ignores it.
+        assert_raises_rpc_error(-8, "That is not the answer that was sealed", other.revealvote, carol, rain["id"], "yes")
         side.revealvote(alice, degrees["id"], "40")
         other.revealvote(bob, degrees["id"], "42")
         other.revealvote(carol, degrees["id"], "99")
@@ -233,6 +248,7 @@ class HivemindTest(SidechainTest):
         assert_equal(resolved["answer"], "yes")
         assert_equal(resolved["outcome"], 1)
         assert_equal(resolved["votes"], [])
+        assert_raises_rpc_error(-8, "is resolved already", side.createmarket, "Too late", [rain["id"]], 5)
         scale = side.getdecision(degrees["id"])
         assert_equal(scale["answer"], 42)
         assert_equal(scale["outcome"], Decimal("0.42"))
@@ -299,7 +315,7 @@ class HivemindTest(SidechainTest):
         assert_equal((side.listreputation(), side.listmarkets(), side.listdecisions(), side.gettxoutsetinfo()["total_amount"]), snapshot)
         self.connect_nodes(0, 1)
 
-        self.log.info("A decision that keeps being unknown is settled as a tie; who does not vote loses reputation")
+        self.log.info("A decision that keeps being unknown is settled as a tie, and costs nobody reputation")
         reputation = self.reputation()
         side.sealvote(alice, late["id"], "unknown")
         self.mine_txs()
@@ -312,12 +328,9 @@ class HivemindTest(SidechainTest):
         assert_equal(tie["status"], "resolved")
         assert_equal(tie["answer"], "tie")
         assert_equal(tie["outcome"], Decimal("0.5"))
-        after_tie = self.reputation()
-        # Bob and Carol did not vote: a tenth of their reputation goes to Alice, who did.
-        for absent in (bob, carol):
-            assert abs(after_tie[absent] - reputation[absent] * Decimal("0.9")) <= Decimal("0.00000001")
-        assert_greater_than(after_tie[alice], reputation[alice] + 5)
-        assert_equal(sum(after_tie.values()), 100)
+        # A decision that nobody could answer is no vote to have skipped, nor one to earn by: otherwise
+        # anyone could list decisions nobody can answer and take reputation from those who do not vote on them.
+        assert_equal(self.reputation(), reputation)
         self.check_in_sync()
         assert_equal(other.listreputation(), side.listreputation())
 
