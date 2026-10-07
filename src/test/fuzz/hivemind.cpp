@@ -29,7 +29,9 @@
 using namespace hivemind;
 
 namespace {
-std::vector<CKey> g_keys;
+// Never destroyed: a key's memory comes from the locked pool, which may be gone by the time
+// globals are destroyed at exit.
+std::vector<CKey>& g_keys{*new std::vector<CKey>};
 
 void initialize_hivemind()
 {
