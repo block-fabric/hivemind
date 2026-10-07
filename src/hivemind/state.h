@@ -10,9 +10,11 @@
 #include <primitives/transaction.h>
 #include <script/script.h>
 #include <serialize.h>
+#include <sidechain/store.h>
 #include <uint256.h>
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -306,46 +308,63 @@ void ReadChanges(Stream& s, std::vector<std::pair<Key, std::optional<Value>>>& c
 }
 } // namespace detail
 
-/** Check the journal of every block against a comparison of the whole state (slow; for tests). */
-extern bool g_check_journal;
+} // namespace hivemind
 
-/** What a block changed in the State: the earlier values of what changed, nullopt where an entry was added. */
-struct StateUndo {
-    bool started{false};
-    uint32_t period{0};
-    bool reveal_phase{false};
-    CAmount voter_pot{0};
-    std::vector<std::pair<Id, std::optional<Decision>>> decisions;
-    std::vector<std::pair<Id, std::optional<Market>>> markets;
-    std::vector<std::pair<PositionKey, std::optional<int64_t>>> positions;
-    std::vector<std::pair<VoteKey, std::optional<Vote>>> votes;
-    std::vector<std::pair<Account, std::optional<int64_t>>> reputation;
-
-    template <typename Stream>
-    void Serialize(Stream& s) const
+/** As PositionKey and VoteKey compare: field by field, hashes as their bytes. */
+template <>
+struct sidechain::KeyCodec<hivemind::PositionKey> {
+    static void Encode(StoreBytes& out, const hivemind::PositionKey& v)
     {
-        s << started << period << reveal_phase << voter_pot;
-        detail::WriteChanges(s, decisions);
-        detail::WriteChanges(s, markets);
-        detail::WriteChanges(s, positions);
-        detail::WriteChanges(s, votes);
-        detail::WriteChanges(s, reputation);
+        KeyCodec<uint256>::Encode(out, v.market);
+        KeyCodec<uint160>::Encode(out, v.account);
+        KeyCodec<uint8_t>::Encode(out, v.state);
     }
-    template <typename Stream>
-    void Unserialize(Stream& s)
+    static hivemind::PositionKey Decode(std::span<const unsigned char>& in)
     {
-        s >> started >> period >> reveal_phase >> voter_pot;
-        detail::ReadChanges(s, decisions);
-        detail::ReadChanges(s, markets);
-        detail::ReadChanges(s, positions);
-        detail::ReadChanges(s, votes);
-        detail::ReadChanges(s, reputation);
+        hivemind::PositionKey v;
+        v.market = KeyCodec<uint256>::Decode(in);
+        v.account = KeyCodec<uint160>::Decode(in);
+        v.state = KeyCodec<uint8_t>::Decode(in);
+        return v;
+    }
+};
+template <>
+struct sidechain::KeyCodec<hivemind::VoteKey> {
+    static void Encode(StoreBytes& out, const hivemind::VoteKey& v)
+    {
+        KeyCodec<uint256>::Encode(out, v.decision);
+        KeyCodec<uint160>::Encode(out, v.voter);
+    }
+    static hivemind::VoteKey Decode(std::span<const unsigned char>& in)
+    {
+        hivemind::VoteKey v;
+        v.decision = KeyCodec<uint256>::Decode(in);
+        v.voter = KeyCodec<uint160>::Decode(in);
+        return v;
     }
 };
 
+namespace hivemind {
+
+/**
+ * The markets, on the store of the sidechain state (sidechain/store.h), one entry per key. Tables:
+ * 0x40 decisions, 0x41 markets, 0x42 positions, 0x43 sealed votes, 0x44 reputation; single values
+ * 0x45 whether the reputation was given out, 0x46 the period, 0x47 whether it is in its reveal
+ * phase, 0x48 the voters' pot. Indexes, so that no rule reads a table whole: 0x49 decisions not
+ * resolved, by the period their vote closes in; 0x4a resolved decisions, by the same; 0x4b markets
+ * by each of their decisions; 0x4c markets not settled, by each of their decisions; 0x4d settled
+ * markets, by the period they settled in.
+ *
+ * What a block changes, the store's journal notes: its undo data.
+ */
 class State
 {
 public:
+    /** Read only. */
+    explicit State(const sidechain::StoreView& view) : m_view{&view}, m_overlay{nullptr} {}
+    /** Read and write. */
+    explicit State(sidechain::StoreOverlay& overlay) : m_view{&overlay}, m_overlay{&overlay} {}
+
     /**
      * What happens at the start of a block, before its transactions: when a
      * new period has begun, the decisions whose vote is over are resolved, the
@@ -364,15 +383,29 @@ public:
     [[nodiscard]] bool ApplyTx(const CTransaction& tx, int height, const Consensus::HivemindParams& params,
                                std::vector<CTxOut>& payouts, std::string& reject_reason);
 
-    const std::map<Id, Decision>& Decisions() const { return m_decisions; }
-    const std::map<Id, Market>& Markets() const { return m_markets; }
-    const std::map<PositionKey, int64_t>& Positions() const { return m_positions; }
-    const std::map<VoteKey, Vote>& Votes() const { return m_votes; }
-    const std::map<Account, int64_t>& Reputation() const { return m_reputation; }
-    uint32_t Period() const { return m_period; }
-    bool RevealPhase() const { return m_reveal_phase; }
+    std::optional<Decision> GetDecision(const Id& id) const;
+    std::optional<Market> GetMarket(const Id& id) const;
+    /** The shares an account holds of a state of a market (0 if none). */
+    int64_t PositionOf(const PositionKey& key) const;
+    std::optional<Vote> GetVote(const VoteKey& key) const;
+    /** The reputation an account holds (0 if none). */
+    int64_t ReputationOf(const Account& account) const;
+    void ForEachDecision(const std::function<bool(const Id&, const Decision&)>& fn) const;
+    void ForEachMarket(const std::function<bool(const Id&, const Market&)>& fn) const;
+    void ForEachPosition(const std::function<bool(const PositionKey&, int64_t)>& fn) const;
+    /** The positions in a market, by account then state. */
+    void ForEachPositionIn(const Id& market, const std::function<bool(const PositionKey&, int64_t)>& fn) const;
+    /** The sealed votes on a decision, by voter. */
+    void ForEachVoteOn(const Id& decision, const std::function<bool(const VoteKey&, const Vote&)>& fn) const;
+    void ForEachReputation(const std::function<bool(const Account&, int64_t)>& fn) const;
+    /** Whole tables, as maps: read whole, for information (RPC), never by the rules. */
+    std::map<Id, Decision> Decisions() const;
+    std::map<Id, Market> Markets() const;
+    std::map<Account, int64_t> Reputation() const;
+    uint32_t Period() const;
+    bool RevealPhase() const;
     /** Fees waiting for voters, because the votes so far had none to pay. */
-    CAmount VoterPot() const { return m_voter_pot; }
+    CAmount VoterPot() const;
 
     /** What buying (positive) or selling (negative) `shares` of a state of a market costs now, fee included; nothing if it cannot be traded. */
     std::optional<CAmount> Quote(const Id& market, uint8_t state, int64_t shares) const;
@@ -393,31 +426,13 @@ public:
      */
     CAmount MarketFee(const std::vector<Id>& decisions, const Consensus::HivemindParams& params) const;
 
-    SERIALIZE_METHODS(State, obj)
-    {
-        READWRITE(obj.m_started, obj.m_period, obj.m_reveal_phase, obj.m_decisions, obj.m_markets, obj.m_positions, obj.m_votes, obj.m_reputation, obj.m_voter_pot);
-    }
-    friend bool operator==(const State& a, const State& b);
-
-    /** What reverts `after` to `before`: the entries that differ, and the rest. */
-    static StateUndo Diff(const State& before, const State& after);
-    void Revert(const StateUndo& undo);
-
-    /**
-     * Note what changes from now on: the earlier value of every entry the first time it is touched.
-     * What a block changed is then had without a copy of the whole state, or comparing it all.
-     */
-    void StartJournal();
-    /** What reverts what changed since StartJournal(), and stop noting; nothing if nothing changed. */
-    std::optional<StateUndo> EndJournal();
-    /** Stop noting, whatever was noted. */
-    void DropJournal() { m_journal.reset(); }
-
 private:
     /** Drop decisions and markets that are long done with. */
     void Prune();
     /** Decisions not resolved whose vote closes in `close_period`. */
     size_t ClosingIn(uint32_t close_period) const;
+    /** Unsettled markets on a decision. */
+    size_t MarketsOn(const Id& decision) const;
     /**
      * Resolve the decisions whose vote closed before `new_period`. A decision voted on again is
      * voted on from `first_open` at the earliest: the first period that still has a time for sealing.
@@ -425,33 +440,17 @@ private:
     void Resolve(uint32_t new_period, uint32_t first_open, const Consensus::HivemindParams& params, std::map<Account, CAmount>& paid);
     void Settle(const Id& id, Market& market, std::map<Account, CAmount>& paid);
 
-    /** The earlier value of an entry, noted before it changes (the first time only). */
-    void NoteDecision(const Id& id);
-    void NoteMarket(const Id& id);
-    void NotePosition(const PositionKey& key);
-    void NoteVote(const VoteKey& key);
-    void NoteReputation(const Account& account);
+    // Writes, with the indexes kept in step.
+    sidechain::StoreOverlay& Writable() const;
+    void SetDecision(const Id& id, const std::optional<Decision>& decision);
+    void SetMarket(const Id& id, const std::optional<Market>& market);
+    void SetPosition(const PositionKey& key, int64_t shares);
+    void SetVote(const VoteKey& key, const std::optional<Vote>& vote);
+    void SetReputation(const Account& account, std::optional<int64_t> amount);
+    void SetVoterPot(CAmount pot);
 
-    struct Journal {
-        StateUndo undo;
-        std::set<Id> decisions, markets;
-        std::set<PositionKey> positions;
-        std::set<VoteKey> votes;
-        std::set<Account> reputation;
-    };
-    //! While a block is applied: what it changed. Neither stored nor compared.
-    std::optional<Journal> m_journal;
-
-    //! Whether the reputation has been given to the account that holds it at the start.
-    bool m_started{false};
-    uint32_t m_period{0};
-    bool m_reveal_phase{false};
-    std::map<Id, Decision> m_decisions;
-    std::map<Id, Market> m_markets;
-    std::map<PositionKey, int64_t> m_positions;
-    std::map<VoteKey, Vote> m_votes;
-    std::map<Account, int64_t> m_reputation;
-    CAmount m_voter_pot{0};
+    const sidechain::StoreView* m_view;
+    sidechain::StoreOverlay* m_overlay;
 };
 
 /**

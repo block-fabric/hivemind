@@ -46,7 +46,7 @@ View GetView(const JSONRPCRequest& request)
     ChainstateManager& chainman{EnsureAnyChainman(request.context)};
     if (!chainman.GetConsensus().sidechain.enabled) throw JSONRPCError(RPC_MISC_ERROR, "This chain is not running as a sidechain, so it has no markets");
     LOCK(::cs_main);
-    return View{chainman.ActiveChainstate().m_scdb.m_side.Hivemind(), chainman.GetConsensus().sidechain.hivemind, chainman.ActiveHeight()};
+    return View{chainman.ActiveChainstate().SideState().Hivemind(), chainman.GetConsensus().sidechain.hivemind, chainman.ActiveHeight()};
 }
 
 std::string DecisionStatus(const Decision& decision, uint32_t period)
@@ -103,8 +103,7 @@ UniValue MarketToJSON(const Id& id, const Market& market, const View& view)
     // Trading stops when the first of the decisions is up for the vote.
     uint32_t trading_until{std::numeric_limits<uint32_t>::max()};
     for (const Id& decision : market.opening.decisions) {
-        const auto it{view.state.Decisions().find(decision)};
-        if (it != view.state.Decisions().end()) trading_until = std::min(trading_until, it->second.listing.event_period);
+        if (const auto found{view.state.GetDecision(decision)}) trading_until = std::min(trading_until, found->listing.event_period);
     }
     if (trading_until != std::numeric_limits<uint32_t>::max()) obj.pushKV("tradinguntil", trading_until);
     obj.pushKV("treasury", ValueFromAmount(market.treasury));
@@ -232,12 +231,13 @@ RPCMethod getdecision()
 {
     const View view{GetView(request)};
     const Id id{ParseHashV(request.params[0], "id")};
-    const auto it{view.state.Decisions().find(id)};
-    if (it == view.state.Decisions().end()) throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "No such decision");
-    UniValue result{DecisionToJSON(id, it->second, view)};
+    const auto found{view.state.GetDecision(id)};
+    if (!found) throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "No such decision");
+    UniValue result{DecisionToJSON(id, *found, view)};
     UniValue votes(UniValue::VARR);
-    for (const auto& [key, vote] : view.state.Votes()) {
-        if (key.decision != id) continue;
+    std::vector<std::pair<hivemind::VoteKey, hivemind::Vote>> sealed;
+    view.state.ForEachVoteOn(id, [&](const hivemind::VoteKey& key, const hivemind::Vote& vote) { sealed.emplace_back(key, vote); return true; });
+    for (const auto& [key, vote] : sealed) {
         UniValue obj(UniValue::VOBJ);
         obj.pushKV("voter", AccountAddress(key.voter));
         obj.pushKV("revealed", vote.revealed);
@@ -324,12 +324,13 @@ RPCMethod getmarket()
 {
     const View view{GetView(request)};
     const Id id{ParseHashV(request.params[0], "id")};
-    const auto it{view.state.Markets().find(id)};
-    if (it == view.state.Markets().end()) throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "No such market");
-    UniValue result{MarketToJSON(id, it->second, view)};
+    const auto found{view.state.GetMarket(id)};
+    if (!found) throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "No such market");
+    UniValue result{MarketToJSON(id, *found, view)};
     UniValue positions(UniValue::VARR);
-    for (const auto& [key, shares] : view.state.Positions()) {
-        if (key.market != id) continue;
+    std::vector<std::pair<hivemind::PositionKey, int64_t>> held;
+    view.state.ForEachPositionIn(id, [&](const hivemind::PositionKey& key, int64_t shares) { held.emplace_back(key, shares); return true; });
+    for (const auto& [key, shares] : held) {
         UniValue obj(UniValue::VOBJ);
         obj.pushKV("account", AccountAddress(key.account));
         obj.pushKV("state", key.state);
@@ -423,7 +424,10 @@ RPCMethod listpositions()
     const View view{GetView(request)};
     const Account account{ParseAccount(request.params[0])};
     UniValue result(UniValue::VARR);
-    for (const auto& [key, shares] : view.state.Positions()) {
+    // Every position, read whole: for information.
+    std::vector<std::pair<hivemind::PositionKey, int64_t>> all;
+    view.state.ForEachPosition([&](const hivemind::PositionKey& key, int64_t shares) { all.emplace_back(key, shares); return true; });
+    for (const auto& [key, shares] : all) {
         if (key.account != account) continue;
         UniValue obj(UniValue::VOBJ);
         obj.pushKV("market", key.market.GetHex());

@@ -29,6 +29,21 @@ using hivemind::Account;
 using hivemind::Id;
 using hivemind::VoteCommitment;
 
+namespace {
+/** The markets, on a store of their own that notes what changes (as a block's would). */
+struct TestMarkets {
+    sidechain::EmptyStore empty;
+    sidechain::StoreOverlay store{empty, /*journal=*/true};
+    hivemind::State state{store};
+    size_t Positions() const
+    {
+        size_t n{0};
+        state.ForEachPosition([&](const hivemind::PositionKey&, int64_t) { ++n; return true; });
+        return n;
+    }
+};
+} // namespace
+
 BOOST_FIXTURE_TEST_SUITE(hivemind_tests, BasicTestingSetup)
 
 // Reference values are from the formula computed in double precision; the fixed
@@ -347,7 +362,8 @@ BOOST_AUTO_TEST_CASE(listing_fee_rises_with_the_period)
     // Filling a period costs more the fuller it gets: the fee doubles every LISTING_FEE_STEP decisions.
     Consensus::HivemindParams params;
     params.period_blocks = 6;
-    hivemind::State state;
+    TestMarkets markets;
+    hivemind::State& state{markets.state};
     std::vector<CTxOut> payouts;
     state.BeginBlock(1, 0, params, payouts);
     std::string reason;
@@ -372,7 +388,8 @@ BOOST_AUTO_TEST_CASE(stall_does_not_use_up_decisions)
     // voted on later, not put off, and not forced to a tie.
     Consensus::HivemindParams params;
     params.period_blocks = 6;
-    hivemind::State state;
+    TestMarkets markets;
+    hivemind::State& state{markets.state};
     std::vector<CTxOut> payouts;
     std::string reason;
     state.BeginBlock(1, 0, params, payouts);
@@ -381,7 +398,7 @@ BOOST_AUTO_TEST_CASE(stall_does_not_use_up_decisions)
     BOOST_REQUIRE_EQUAL(state.Decisions().at(id).close_period, 2U);
     // Several periods go by without a block: from period 0 straight into period 9.
     state.BeginBlock(9 * 6, 0, params, payouts);
-    const hivemind::Decision& decision{state.Decisions().at(id)};
+    const hivemind::Decision decision{state.Decisions().at(id)};
     BOOST_CHECK(!decision.resolved);
     BOOST_CHECK_EQUAL(decision.rolls, 0);
     BOOST_CHECK_GE(decision.close_period, 9U);
@@ -393,7 +410,8 @@ BOOST_AUTO_TEST_CASE(refunds_keep_a_fee)
     // purchase has to be worth paying out, so that refunds cannot flood the queue of payouts.
     Consensus::HivemindParams params;
     params.period_blocks = 6;
-    hivemind::State state;
+    TestMarkets markets;
+    hivemind::State& state{markets.state};
     std::vector<CTxOut> payouts;
     std::string reason;
     state.BeginBlock(1, 0, params, payouts);
@@ -420,7 +438,8 @@ BOOST_AUTO_TEST_CASE(market_fee_counts_every_decision)
     // goes to the voters of its decisions.
     Consensus::HivemindParams params;
     params.period_blocks = 6;
-    hivemind::State state;
+    TestMarkets markets;
+    hivemind::State& state{markets.state};
     std::vector<CTxOut> payouts;
     std::string reason;
     state.BeginBlock(1, 0, params, payouts);
@@ -455,7 +474,8 @@ BOOST_AUTO_TEST_CASE(catch_up_does_not_use_up_rolls)
     // not put off again in every period skipped until it is forced to a tie.
     Consensus::HivemindParams params;
     params.period_blocks = 6;
-    hivemind::State state;
+    TestMarkets markets;
+    hivemind::State& state{markets.state};
     std::vector<CTxOut> payouts;
     std::string reason;
     state.BeginBlock(1, 0, params, payouts);
@@ -468,41 +488,37 @@ BOOST_AUTO_TEST_CASE(catch_up_does_not_use_up_rolls)
     BOOST_REQUIRE_EQUAL(state.Decisions().at(id).close_period, 2U);
     BOOST_REQUIRE(state.RevealPhase());
     state.BeginBlock(9 * 6, 0, params, payouts);
-    const hivemind::Decision& decision{state.Decisions().at(id)};
+    const hivemind::Decision decision{state.Decisions().at(id)};
     BOOST_CHECK(!decision.resolved);
     BOOST_CHECK_EQUAL(decision.rolls, 1);
     BOOST_CHECK_EQUAL(decision.close_period, 9U);
 }
 
-BOOST_AUTO_TEST_CASE(journal_undoes_every_block)
+BOOST_AUTO_TEST_CASE(undo_of_every_block)
 {
-    // What a block changes, as the journal notes it, takes the state back to exactly what it was:
+    // What a block changes, as the store notes it, takes the state back to exactly what it was:
     // through listings, markets, purchases, refunds, resolution, settlement and pruning.
     Consensus::HivemindParams params;
     params.period_blocks = 6;
-    hivemind::State state;
+    TestMarkets markets;
+    hivemind::State& state{markets.state};
     std::string reason;
     int height{0};
     const auto block{[&](int at, const std::vector<CTransaction>& txs) {
-        const hivemind::State before{state};
+        const uint256 before{sidechain::StoreHash(markets.store)};
         std::vector<CTxOut> payouts;
-        state.StartJournal();
         state.BeginBlock(at, 0, params, payouts);
         for (const CTransaction& tx : txs) BOOST_REQUIRE(state.ApplyTx(tx, at, params, payouts, reason));
-        const auto undo{state.EndJournal()};
-        BOOST_CHECK_EQUAL(undo.has_value(), !(before == state));
-        hivemind::State reverted{state};
-        if (undo) reverted.Revert(*undo);
-        BOOST_CHECK(reverted == before);
-        // Written out and read back, too, as the undo data of a block is.
-        if (undo) {
-            DataStream stream{};
-            stream << *undo;
-            hivemind::StateUndo read;
-            stream >> read;
-            hivemind::State again{state};
-            again.Revert(read);
-            BOOST_CHECK(again == before);
+        const sidechain::StoreUndo undo{markets.store.TakeUndo()};
+        // Written out and read back, as the undo data of a block is, it takes the store back.
+        DataStream stream{};
+        stream << undo;
+        sidechain::StoreUndo read;
+        stream >> read;
+        {
+            sidechain::StoreOverlay reverted{markets.store, /*journal=*/false};
+            reverted.Revert(read);
+            BOOST_CHECK(sidechain::StoreHash(reverted) == before);
         }
         height = at;
     }};
@@ -528,12 +544,12 @@ BOOST_AUTO_TEST_CASE(journal_undoes_every_block)
         buy.shares = (i + 1) * ONE;
         block(4 + i, {ActionTx(buy, 10 * COIN, 10 + i)});
     }
-    BOOST_CHECK(!state.Positions().empty());
+    BOOST_CHECK(markets.Positions() > 0);
     // Periods go by: the decisions close with no vote, are put off, resolved in the end, the
     // market settles and pays, and later both are pruned.
     while (height < 6 * 500 && !state.Markets().at(market).settled) block(height + 3, {});
     BOOST_REQUIRE(state.Markets().at(market).settled);
-    BOOST_CHECK(state.Positions().empty());
+    BOOST_CHECK_EQUAL(markets.Positions(), 0U);
     block(height + 6 * (hivemind::PRUNE_AFTER_PERIODS + 2), {});
     BOOST_CHECK(!state.Markets().contains(market));
     BOOST_CHECK(!state.Decisions().contains(a));
@@ -565,7 +581,8 @@ BOOST_AUTO_TEST_CASE(clock_and_periods)
 
     // A state follows the clock forward, and never back when the time of the mainchain does.
     params.period_blocks = 0;
-    hivemind::State state;
+    TestMarkets markets;
+    hivemind::State& state{markets.state};
     std::vector<CTxOut> payouts;
     state.BeginBlock(1, 1000 + 5 * 600 + 500, params, payouts);
     BOOST_CHECK_EQUAL(state.Period(), 5U);

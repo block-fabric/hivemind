@@ -691,13 +691,13 @@ public:
     std::string whyNoMarketOn(const std::vector<uint256>& decisions) override
     {
         LOCK(::cs_main);
-        const hivemind::State& markets{chainman().ActiveChainstate().m_scdb.m_side.Hivemind()};
+        const hivemind::State markets{chainman().ActiveChainstate().SideState().Hivemind()};
         for (const uint256& id : decisions) {
-            const auto it{markets.Decisions().find(id)};
-            if (it == markets.Decisions().end()) {
+            const auto found{markets.GetDecision(id)};
+            if (!found) {
                 return strprintf("There is no decision %s on the chain. One that was just listed has to be mined first.", id.GetHex());
             }
-            const hivemind::Decision& decision{it->second};
+            const hivemind::Decision& decision{*found};
             if (decision.resolved) return strprintf("The decision \"%s\" is resolved already: there is nothing left to trade on.", decision.listing.text);
             if (markets.Period() > decision.listing.event_period) {
                 return strprintf("The decision \"%s\" is about period %u, and the chain is in period %u: its answer is being voted on, and a market can only be opened before that. "
@@ -709,35 +709,33 @@ public:
     CAmount getDecisionListingFee(uint32_t close_period) override
     {
         LOCK(::cs_main);
-        return chainman().ActiveChainstate().m_scdb.m_side.Hivemind().ListingFee(close_period, chainman().GetConsensus().sidechain.hivemind);
+        return chainman().ActiveChainstate().SideState().Hivemind().ListingFee(close_period, chainman().GetConsensus().sidechain.hivemind);
     }
     CAmount getMarketOpeningFee(const std::vector<uint256>& decisions) override
     {
         LOCK(::cs_main);
-        return chainman().ActiveChainstate().m_scdb.m_side.Hivemind().MarketFee(decisions, chainman().GetConsensus().sidechain.hivemind);
+        return chainman().ActiveChainstate().SideState().Hivemind().MarketFee(decisions, chainman().GetConsensus().sidechain.hivemind);
     }
     std::optional<uint256> getVoteCommitment(const uint256& decision, const uint160& voter) override
     {
         LOCK(::cs_main);
-        const auto& votes{chainman().ActiveChainstate().m_scdb.m_side.Hivemind().Votes()};
-        const auto it{votes.find(hivemind::VoteKey{decision, voter})};
-        if (it == votes.end()) return std::nullopt;
-        return it->second.commitment;
+        const auto vote{chainman().ActiveChainstate().SideState().Hivemind().GetVote(hivemind::VoteKey{decision, voter})};
+        if (!vote) return std::nullopt;
+        return vote->commitment;
     }
     std::optional<uint8_t> getDecisionRolls(const uint256& decision) override
     {
         LOCK(::cs_main);
-        const auto& decisions{chainman().ActiveChainstate().m_scdb.m_side.Hivemind().Decisions()};
-        const auto it{decisions.find(decision)};
-        if (it == decisions.end()) return std::nullopt;
-        return it->second.rolls;
+        const auto found{chainman().ActiveChainstate().SideState().Hivemind().GetDecision(decision)};
+        if (!found) return std::nullopt;
+        return found->rolls;
     }
     std::optional<bool> getDecisionSealable(const uint256& decision) override
     {
         LOCK(::cs_main);
-        const hivemind::State& state{chainman().ActiveChainstate().m_scdb.m_side.Hivemind()};
-        const auto it{state.Decisions().find(decision)};
-        if (it == state.Decisions().end() || it->second.resolved) return std::nullopt;
+        const hivemind::State state{chainman().ActiveChainstate().SideState().Hivemind()};
+        const auto found{state.GetDecision(decision)};
+        if (!found || found->resolved) return std::nullopt;
         // A seal goes in the next block: what counts is the clock of that block, which follows the
         // mainchain as far as the record goes, and never goes back.
         const sidechain::Mainchain& record{*Assert(chainman().m_mainchain)};
@@ -753,14 +751,14 @@ public:
             reveal = reveal || next.reveal_phase;
         }
         // The window opens the period after the event, and closes with the last seal block.
-        return period > it->second.listing.event_period && !(reveal && it->second.close_period <= period);
+        return period > found->listing.event_period && !(reveal && found->close_period <= period);
     }
     std::optional<bool> getDecisionRevealable(const uint256& decision) override
     {
         LOCK(::cs_main);
-        const hivemind::State& state{chainman().ActiveChainstate().m_scdb.m_side.Hivemind()};
-        const auto it{state.Decisions().find(decision)};
-        if (it == state.Decisions().end() || it->second.resolved) return std::nullopt;
+        const hivemind::State state{chainman().ActiveChainstate().SideState().Hivemind()};
+        const auto found{state.GetDecision(decision)};
+        if (!found || found->resolved) return std::nullopt;
         // A reveal counts in the reveal phase of the decision's last period, as of the next block: one
         // made before is ignored, and tells everyone the vote.
         const sidechain::Mainchain& record{*Assert(chainman().m_mainchain)};
@@ -775,17 +773,17 @@ public:
         } else if (next.period == period) {
             reveal = reveal || next.reveal_phase;
         }
-        return reveal && period == it->second.close_period;
+        return reveal && period == found->close_period;
     }
     std::string whyNoMarketTrade(const uint256& market, uint8_t state, int64_t shares) override
     {
         LOCK(::cs_main);
-        return chainman().ActiveChainstate().m_scdb.m_side.Hivemind().WhyNoTrade(market, state, shares);
+        return chainman().ActiveChainstate().SideState().Hivemind().WhyNoTrade(market, state, shares);
     }
     std::optional<CAmount> quoteMarketTrade(const uint256& market, uint8_t state, int64_t shares) override
     {
         LOCK(::cs_main);
-        return chainman().ActiveChainstate().m_scdb.m_side.Hivemind().Quote(market, state, shares);
+        return chainman().ActiveChainstate().SideState().Hivemind().Quote(market, state, shares);
     }
     double guessVerificationProgress(const uint256& block_hash) override
     {

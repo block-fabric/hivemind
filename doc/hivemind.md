@@ -96,12 +96,12 @@ every outcome until the reputation is spread.
   everyone else's. Sales, transfers and sealed votes are signed by their account;
   the signature names the first input of the transaction, so it cannot be
   replayed.
-- **Reverting a block** restores the entries of the market state that the
-  block changed, kept with its undo data. As a block is applied, the state
-  notes the earlier value of each entry it touches the first time (a
-  journal): nothing is copied or compared in the size of the whole state.
-  On regtest, `-checkhivemindjournal` checks the journal against a full copy
-  every block.
+- **The markets are kept on the store of the sidechain state**, one entry per
+  key (decisions, markets, positions, votes, reputation), with indexes so that
+  no rule reads a table whole: open and resolved decisions by the period their
+  vote closes in, markets by each of their decisions, settled markets by the
+  period they settled in. A block's changes, the earlier value of each entry
+  it touched, are its undo data, as for the rest of the sidechain state.
 - **The state does not grow for free** (from `audit_height`): a purchase costs
   at least `MIN_PURCHASE`; a vote is sealed only by an account holding the
   reputation that counts as a voter of its own in the resolution; a settlement

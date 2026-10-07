@@ -4,6 +4,8 @@
 
 #include <hivemind/state.h>
 
+#include <util/check.h>
+
 #include <tinyformat.h>
 #include <addresstype.h>
 #include <common/signmessage.h>
@@ -60,13 +62,6 @@ bool operator==(const Market& a, const Market& b)
 {
     return ActionScript(a.opening) == ActionScript(b.opening) && a.height == b.height && a.shares == b.shares &&
            a.treasury == b.treasury && a.fees == b.fees && a.settled == b.settled && a.settled_period == b.settled_period;
-}
-
-bool operator==(const State& a, const State& b)
-{
-    return a.m_started == b.m_started && a.m_period == b.m_period && a.m_reveal_phase == b.m_reveal_phase &&
-           a.m_decisions == b.m_decisions && a.m_markets == b.m_markets && a.m_positions == b.m_positions &&
-           a.m_votes == b.m_votes && a.m_reputation == b.m_reputation && a.m_voter_pot == b.m_voter_pot;
 }
 
 CScript ActionScript(const Action& action)
@@ -240,32 +235,193 @@ bool CheckTx(const CTransaction& tx, const Consensus::HivemindParams& params, st
     return true;
 }
 
+namespace {
+const sidechain::Table<uint256, Decision> DECISIONS{0x40};
+const sidechain::Table<uint256, Market> MARKETS{0x41};
+const sidechain::Table<PositionKey, int64_t> POSITIONS{0x42};
+const sidechain::Table<VoteKey, Vote> VOTES{0x43};
+const sidechain::Table<uint160, int64_t> REPUTATION{0x44};
+const sidechain::Cell<bool> STARTED{0x45, false};
+const sidechain::Cell<uint32_t> PERIOD{0x46, 0};
+const sidechain::Cell<bool> REVEAL{0x47, false};
+const sidechain::Cell<CAmount> VOTER_POT{0x48, 0};
+constexpr uint8_t OPEN_BY_CLOSE{0x49};
+constexpr uint8_t RESOLVED_BY_CLOSE{0x4a};
+constexpr uint8_t MARKETS_BY_DECISION{0x4b};
+constexpr uint8_t UNSETTLED_BY_DECISION{0x4c};
+constexpr uint8_t SETTLED_BY_PERIOD{0x4d};
+
+sidechain::StoreBytes PeriodKey(uint8_t table, uint32_t period, const Id& id)
+{
+    sidechain::StoreBytes key{table};
+    sidechain::KeyCodec<uint32_t>::Encode(key, period);
+    sidechain::KeyCodec<uint256>::Encode(key, id);
+    return key;
+}
+sidechain::StoreBytes PairKey(uint8_t table, const Id& a, const Id& b)
+{
+    sidechain::StoreBytes key{table};
+    sidechain::KeyCodec<uint256>::Encode(key, a);
+    sidechain::KeyCodec<uint256>::Encode(key, b);
+    return key;
+}
+sidechain::StoreBytes Head(uint8_t table, const Id& a)
+{
+    sidechain::StoreBytes key{table};
+    sidechain::KeyCodec<uint256>::Encode(key, a);
+    return key;
+}
+/** The ids at the end of the keys of an index, from `from` while `keep` says so. */
+std::vector<Id> IdsIn(const sidechain::StoreView& view, const sidechain::StoreBytes& prefix, const std::function<bool(std::span<const unsigned char>)>& keep = {})
+{
+    std::vector<Id> ids;
+    view.ForEach(prefix, [&](const sidechain::StoreBytes& key, const sidechain::StoreBytes&) {
+        std::span<const unsigned char> rest{key};
+        rest = rest.subspan(1);
+        if (keep && !keep(rest)) return false;
+        std::span<const unsigned char> last{key};
+        last = last.subspan(key.size() - 32);
+        ids.push_back(sidechain::KeyCodec<uint256>::Decode(last));
+        return true;
+    });
+    return ids;
+}
+} // namespace
+
+sidechain::StoreOverlay& State::Writable() const { return *Assert(m_overlay); }
+std::optional<Decision> State::GetDecision(const Id& id) const { return DECISIONS.Get(*m_view, id); }
+std::optional<Market> State::GetMarket(const Id& id) const { return MARKETS.Get(*m_view, id); }
+int64_t State::PositionOf(const PositionKey& key) const { return POSITIONS.Get(*m_view, key).value_or(0); }
+std::optional<Vote> State::GetVote(const VoteKey& key) const { return VOTES.Get(*m_view, key); }
+int64_t State::ReputationOf(const Account& account) const { return REPUTATION.Get(*m_view, account).value_or(0); }
+uint32_t State::Period() const { return PERIOD.Get(*m_view); }
+bool State::RevealPhase() const { return REVEAL.Get(*m_view); }
+CAmount State::VoterPot() const { return VOTER_POT.Get(*m_view); }
+std::map<Id, Decision> State::Decisions() const
+{
+    std::map<Id, Decision> all;
+    ForEachDecision([&](const Id& id, const Decision& d) { all.emplace(id, d); return true; });
+    return all;
+}
+std::map<Id, Market> State::Markets() const
+{
+    std::map<Id, Market> all;
+    ForEachMarket([&](const Id& id, const Market& m) { all.emplace(id, m); return true; });
+    return all;
+}
+std::map<Account, int64_t> State::Reputation() const
+{
+    std::map<Account, int64_t> all;
+    ForEachReputation([&](const Account& a, int64_t r) { all.emplace(a, r); return true; });
+    return all;
+}
+void State::ForEachDecision(const std::function<bool(const Id&, const Decision&)>& fn) const { DECISIONS.ForEach(*m_view, fn); }
+void State::ForEachMarket(const std::function<bool(const Id&, const Market&)>& fn) const { MARKETS.ForEach(*m_view, fn); }
+void State::ForEachPosition(const std::function<bool(const PositionKey&, int64_t)>& fn) const
+{
+    POSITIONS.ForEach(*m_view, [&](const PositionKey& k, const int64_t& v) { return fn(k, v); });
+}
+void State::ForEachPositionIn(const Id& market, const std::function<bool(const PositionKey&, int64_t)>& fn) const
+{
+    POSITIONS.ForEachWith(*m_view, market, [&](const PositionKey& k, const int64_t& v) { return fn(k, v); });
+}
+void State::ForEachVoteOn(const Id& decision, const std::function<bool(const VoteKey&, const Vote&)>& fn) const { VOTES.ForEachWith(*m_view, decision, fn); }
+void State::ForEachReputation(const std::function<bool(const Account&, int64_t)>& fn) const
+{
+    REPUTATION.ForEach(*m_view, [&](const Account& k, const int64_t& v) { return fn(k, v); });
+}
+
+void State::SetDecision(const Id& id, const std::optional<Decision>& decision)
+{
+    sidechain::StoreOverlay& out{Writable()};
+    if (const auto old{GetDecision(id)}) out.Erase(PeriodKey(old->resolved ? RESOLVED_BY_CLOSE : OPEN_BY_CLOSE, old->close_period, id));
+    if (decision) {
+        DECISIONS.Put(out, id, *decision);
+        out.Put(PeriodKey(decision->resolved ? RESOLVED_BY_CLOSE : OPEN_BY_CLOSE, decision->close_period, id), {});
+    } else {
+        DECISIONS.Erase(out, id);
+    }
+}
+
+void State::SetMarket(const Id& id, const std::optional<Market>& market)
+{
+    sidechain::StoreOverlay& out{Writable()};
+    if (const auto old{GetMarket(id)}) {
+        for (const Id& decision : old->opening.decisions) {
+            out.Erase(PairKey(MARKETS_BY_DECISION, decision, id));
+            if (!old->settled) out.Erase(PairKey(UNSETTLED_BY_DECISION, decision, id));
+        }
+        if (old->settled) out.Erase(PeriodKey(SETTLED_BY_PERIOD, old->settled_period, id));
+    }
+    if (market) {
+        MARKETS.Put(out, id, *market);
+        for (const Id& decision : market->opening.decisions) {
+            out.Put(PairKey(MARKETS_BY_DECISION, decision, id), {});
+            if (!market->settled) out.Put(PairKey(UNSETTLED_BY_DECISION, decision, id), {});
+        }
+        if (market->settled) out.Put(PeriodKey(SETTLED_BY_PERIOD, market->settled_period, id), {});
+    } else {
+        MARKETS.Erase(out, id);
+    }
+}
+
+void State::SetPosition(const PositionKey& key, int64_t shares)
+{
+    if (shares == 0) {
+        POSITIONS.Erase(Writable(), key);
+    } else {
+        POSITIONS.Put(Writable(), key, shares);
+    }
+}
+
+void State::SetVote(const VoteKey& key, const std::optional<Vote>& vote)
+{
+    if (vote) {
+        VOTES.Put(Writable(), key, *vote);
+    } else {
+        VOTES.Erase(Writable(), key);
+    }
+}
+
+void State::SetReputation(const Account& account, std::optional<int64_t> amount)
+{
+    if (amount) {
+        REPUTATION.Put(Writable(), account, *amount);
+    } else {
+        REPUTATION.Erase(Writable(), account);
+    }
+}
+
+void State::SetVoterPot(CAmount pot) { VOTER_POT.Put(Writable(), pot); }
+
 bool State::TradingOpen(const Market& market) const
 {
     if (market.settled) return false;
     // Trading stops when the first of the decisions is up for the vote: from then on
     // those who vote would know more than those who trade.
+    const uint32_t period{Period()};
     for (const Id& id : market.opening.decisions) {
-        const auto it{m_decisions.find(id)};
-        if (it == m_decisions.end() || it->second.resolved || m_period > it->second.listing.event_period) return false;
+        const auto decision{GetDecision(id)};
+        if (!decision || decision->resolved || period > decision->listing.event_period) return false;
     }
     return true;
 }
 
 std::string State::WhyNoTrade(const Id& market_id, uint8_t state, int64_t shares) const
 {
-    const auto it{m_markets.find(market_id)};
-    if (it == m_markets.end()) return "There is no such market on the chain. One that was just opened has to be mined first.";
-    const Market& market{it->second};
+    const auto found{GetMarket(market_id)};
+    if (!found) return "There is no such market on the chain. One that was just opened has to be mined first.";
+    const Market& market{*found};
     if (market.settled) return strprintf("The market \"%s\" is settled: it has paid out.", market.opening.text);
     // A market maker has no stock of shares: it sells as many as are asked for while trading is open, and none after.
+    const uint32_t period{Period()};
     for (const Id& id : market.opening.decisions) {
-        const auto decision{m_decisions.find(id)};
-        if (decision == m_decisions.end()) continue;
-        if (decision->second.resolved || m_period > decision->second.listing.event_period) {
+        const auto decision{GetDecision(id)};
+        if (!decision) continue;
+        if (decision->resolved || period > decision->listing.event_period) {
             return strprintf("Trading in the market \"%s\" is closed: its decision \"%s\" was about period %u, and the chain is in period %u. "
                              "From the end of that period on the answer is voted on, and shares are neither sold nor bought back until the market pays out.",
-                             market.opening.text, decision->second.listing.text, decision->second.listing.event_period, m_period);
+                             market.opening.text, decision->listing.text, decision->listing.event_period, period);
         }
     }
     if (state >= market.shares.size()) return strprintf("The market has the states 0 to %u.", unsigned(market.shares.size() - 1));
@@ -276,9 +432,9 @@ std::string State::WhyNoTrade(const Id& market_id, uint8_t state, int64_t shares
 
 std::optional<CAmount> State::Quote(const Id& market_id, uint8_t state, int64_t shares) const
 {
-    const auto it{m_markets.find(market_id)};
-    if (it == m_markets.end() || !TradingOpen(it->second) || state >= it->second.shares.size() || shares == 0) return std::nullopt;
-    const Market& market{it->second};
+    const auto found{GetMarket(market_id)};
+    if (!found || !TradingOpen(*found) || state >= found->shares.size() || shares == 0) return std::nullopt;
+    const Market& market{*found};
     std::vector<int64_t> after{market.shares};
     after[state] += shares;
     if (after[state] < 0) return std::nullopt;
@@ -289,9 +445,24 @@ std::optional<CAmount> State::Quote(const Id& market_id, uint8_t state, int64_t 
 
 size_t State::ClosingIn(uint32_t close_period) const
 {
-    return static_cast<size_t>(std::count_if(m_decisions.begin(), m_decisions.end(), [&](const auto& entry) {
-        return !entry.second.resolved && entry.second.close_period == close_period;
-    }));
+    sidechain::StoreBytes prefix{OPEN_BY_CLOSE};
+    sidechain::KeyCodec<uint32_t>::Encode(prefix, close_period);
+    size_t n{0};
+    m_view->ForEach(prefix, [&](const sidechain::StoreBytes&, const sidechain::StoreBytes&) {
+        ++n;
+        return true;
+    });
+    return n;
+}
+
+size_t State::MarketsOn(const Id& decision) const
+{
+    size_t n{0};
+    m_view->ForEach(Head(UNSETTLED_BY_DECISION, decision), [&](const sidechain::StoreBytes&, const sidechain::StoreBytes&) {
+        ++n;
+        return true;
+    });
+    return n;
 }
 
 CAmount State::ListingFee(uint32_t close_period, const Consensus::HivemindParams& params) const
@@ -304,15 +475,8 @@ CAmount State::MarketFee(const std::vector<Id>& decisions, const Consensus::Hive
     if (decisions.empty()) return params.listing_fee;
     // Counted by every decision of a market, whatever its place: a market on D could otherwise be
     // made dear by markets that merely have D second, or made cheap by putting a fresh decision first.
-    std::map<Id, size_t> on_decision;
-    for (const auto& [id, market] : m_markets) {
-        if (market.settled) continue;
-        for (const Id& decision : market.opening.decisions) ++on_decision[decision];
-    }
     size_t most{0};
-    for (const Id& decision : decisions) {
-        if (const auto it{on_decision.find(decision)}; it != on_decision.end()) most = std::max(most, it->second);
-    }
+    for (const Id& decision : decisions) most = std::max(most, MarketsOn(decision));
     const size_t doublings{most / MARKET_FEE_STEP};
     // Beyond what any amount of coins can pay, it stays there.
     if (doublings >= 40 || (params.listing_fee << doublings) > MAX_MONEY) return MAX_MONEY;
@@ -327,17 +491,19 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
         const CTxOut& out{tx.vout[n]};
         const auto action{ParseActionScript(out.scriptPubKey)};
         if (!action) continue;
+        const uint32_t period{Period()};
+        const bool reveal_phase{RevealPhase()};
         // What cannot be done is not done, and the coins burned for it go back.
         // Less a small part, for the voters: payouts cost every block room, and refunds by the
         // thousand would hold back everyone else's.
         const auto refund{[&](const Account& account) {
             const CAmount kept{std::min(out.nValue, REFUND_FEE)};
-            m_voter_pot += kept;
+            SetVoterPot(VoterPot() + kept);
             if (out.nValue > kept) payouts.push_back(PayAccount(account, out.nValue - kept));
         }};
 
         if (const auto* list{std::get_if<ListDecision>(&*action)}) {
-            if (list->event_period < m_period || list->event_period > m_period + params.max_periods_ahead) {
+            if (list->event_period < period || list->event_period > period + params.max_periods_ahead) {
                 refund(list->author);
                 continue;
             }
@@ -353,8 +519,9 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
             decision.height = height;
             decision.close_period = list->event_period + list->vote_periods;
             decision.fee = out.nValue;
-            NoteDecision(MakeId(tx.GetHash(), n));
-            m_decisions.emplace(MakeId(tx.GetHash(), n), std::move(decision));
+            const Id id{MakeId(tx.GetHash(), n)};
+            // The first of an id stays, as it did in a map.
+            if (!GetDecision(id)) SetDecision(id, decision);
         } else if (const auto* open{std::get_if<OpenMarket>(&*action)}) {
             Market market;
             market.opening = *open;
@@ -364,8 +531,8 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
             // A market is opened on decisions that are still open themselves.
             bool open_decisions{true};
             for (const Id& id : open->decisions) {
-                const auto it{m_decisions.find(id)};
-                open_decisions = open_decisions && it != m_decisions.end() && !it->second.resolved && m_period <= it->second.listing.event_period;
+                const auto decision{GetDecision(id)};
+                open_decisions = open_decisions && decision && !decision->resolved && period <= decision->listing.event_period;
             }
             const CAmount fee{open_decisions ? MarketFee(open->decisions, params) : 0};
             if (!open_decisions || out.nValue < funding || out.nValue - funding < fee) {
@@ -377,19 +544,20 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
             // listing fees; the rest back to the author.
             const CAmount per_decision{fee / static_cast<CAmount>(open->decisions.size())};
             for (size_t k{0}; k < open->decisions.size(); ++k) {
-                NoteDecision(open->decisions[k]);
-                m_decisions.at(open->decisions[k]).fee += per_decision + (k == 0 ? fee - per_decision * static_cast<CAmount>(open->decisions.size()) : 0);
+                Decision decision{*Assert(GetDecision(open->decisions[k]))};
+                decision.fee += per_decision + (k == 0 ? fee - per_decision * static_cast<CAmount>(open->decisions.size()) : 0);
+                SetDecision(open->decisions[k], decision);
             }
             if (out.nValue > funding + fee) payouts.push_back(PayAccount(open->author, out.nValue - funding - fee));
-            NoteMarket(MakeId(tx.GetHash(), n));
-            m_markets.emplace(MakeId(tx.GetHash(), n), std::move(market));
+            const Id id{MakeId(tx.GetHash(), n)};
+            if (!GetMarket(id)) SetMarket(id, market);
         } else if (const auto* buy{std::get_if<BuyShares>(&*action)}) {
-            const auto it{m_markets.find(buy->market)};
-            if (it == m_markets.end() || !TradingOpen(it->second) || buy->state >= it->second.shares.size()) {
+            const auto found{GetMarket(buy->market)};
+            if (!found || !TradingOpen(*found) || buy->state >= found->shares.size()) {
                 refund(buy->account);
                 continue;
             }
-            Market& market{it->second};
+            Market market{*found};
             std::vector<int64_t> after{market.shares};
             after[buy->state] += buy->shares;
             const CAmount cost{LmsrTradeCost(market.shares, after, market.opening.liquidity)};
@@ -402,69 +570,67 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
                 refund(buy->account);
                 continue;
             }
-            NoteMarket(buy->market);
-            NotePosition(PositionKey{buy->market, buy->account, buy->state});
             market.shares = std::move(after);
             market.treasury += cost;
             market.fees += fee;
-            m_positions[PositionKey{buy->market, buy->account, buy->state}] += buy->shares;
+            SetMarket(buy->market, market);
+            const PositionKey key{buy->market, buy->account, buy->state};
+            SetPosition(key, PositionOf(key) + buy->shares);
             if (out.nValue > cost + fee) payouts.push_back(PayAccount(buy->account, out.nValue - cost - fee));
         } else if (const auto* sell{std::get_if<SellShares>(&*action)}) {
-            const auto it{m_markets.find(sell->market)};
-            const auto position{m_positions.find(PositionKey{sell->market, sell->account, sell->state})};
-            if (it == m_markets.end() || !TradingOpen(it->second) || position == m_positions.end() || position->second < sell->shares) continue;
-            Market& market{it->second};
+            const auto found{GetMarket(sell->market)};
+            const PositionKey key{sell->market, sell->account, sell->state};
+            const auto position{POSITIONS.Get(*m_view, key)};
+            if (!found || !TradingOpen(*found) || !position || *position < sell->shares) continue;
+            Market market{*found};
             std::vector<int64_t> after{market.shares};
             after[sell->state] -= sell->shares;
             const CAmount proceeds{-LmsrTradeCost(market.shares, after, market.opening.liquidity)};
             const CAmount fee{(proceeds * market.opening.fee_bps + 9999) / 10000};
             if (proceeds <= 0 || proceeds - fee < sell->min_proceeds || proceeds - fee < 0 || proceeds > market.treasury ||
                 market.treasury - proceeds < *std::max_element(after.begin(), after.end())) continue;
-            NoteMarket(sell->market);
-            NotePosition(position->first);
             market.shares = std::move(after);
             market.treasury -= proceeds;
             market.fees += fee;
-            position->second -= sell->shares;
-            if (position->second == 0) m_positions.erase(position);
+            SetMarket(sell->market, market);
+            SetPosition(key, *position - sell->shares);
             if (proceeds > fee) payouts.push_back(PayAccount(sell->account, proceeds - fee));
         } else if (const auto* transfer{std::get_if<TransferReputation>(&*action)}) {
             // Reputation does not move while votes are revealed: it would let a holder put it
             // behind whichever revealed vote turned out best. The period ends, and the votes are
             // weighed, with the last block of the reveal phase.
-            if (m_reveal_phase) continue;
-            const auto from{m_reputation.find(transfer->from)};
-            if (from == m_reputation.end() || from->second < transfer->amount) continue;
-            NoteReputation(transfer->from);
-            NoteReputation(transfer->to);
-            from->second -= transfer->amount;
-            if (from->second == 0) m_reputation.erase(from);
-            m_reputation[transfer->to] += transfer->amount;
+            if (reveal_phase) continue;
+            const auto from{REPUTATION.Get(*m_view, transfer->from)};
+            if (!from || *from < transfer->amount) continue;
+            const int64_t left{*from - transfer->amount};
+            SetReputation(transfer->from, left == 0 ? std::nullopt : std::optional{left});
+            SetReputation(transfer->to, ReputationOf(transfer->to) + transfer->amount);
         } else if (const auto* seal{std::get_if<SealVote>(&*action)}) {
-            const auto it{m_decisions.find(seal->decision)};
-            if (it == m_decisions.end() || it->second.resolved) continue;
-            const Decision& decision{it->second};
+            const auto found{GetDecision(seal->decision)};
+            if (!found || found->resolved) continue;
+            const Decision& decision{*found};
             // Votes are sealed from the period after the event until the last third of the last period.
-            const bool in_window{m_period > decision.listing.event_period && m_period <= decision.close_period};
-            if (!in_window || (m_period == decision.close_period && m_reveal_phase)) continue;
+            const bool in_window{period > decision.listing.event_period && period <= decision.close_period};
+            if (!in_window || (period == decision.close_period && reveal_phase)) continue;
             // Only reputation that counts in the resolution seals a vote: a seal costs every node.
             if (height >= params.audit_height) {
-                const auto held{m_reputation.find(seal->voter)};
-                if (held == m_reputation.end() || held->second < params.reputation_supply / MAX_VOTERS) continue;
+                const auto held{REPUTATION.Get(*m_view, seal->voter)};
+                if (!held || *held < params.reputation_supply / MAX_VOTERS) continue;
             }
-            NoteVote(VoteKey{seal->decision, seal->voter});
-            m_votes[VoteKey{seal->decision, seal->voter}] = Vote{seal->commitment, false, 0};
+            SetVote(VoteKey{seal->decision, seal->voter}, Vote{seal->commitment, false, 0});
         } else if (const auto* reveal{std::get_if<RevealVote>(&*action)}) {
-            const auto it{m_decisions.find(reveal->decision)};
-            const auto vote{m_votes.find(VoteKey{reveal->decision, reveal->voter})};
-            if (it == m_decisions.end() || it->second.resolved || vote == m_votes.end() || vote->second.revealed) continue;
-            const Decision& decision{it->second};
-            if (m_period != decision.close_period || !m_reveal_phase) continue;
+            const auto found{GetDecision(reveal->decision)};
+            const VoteKey key{reveal->decision, reveal->voter};
+            const auto vote{GetVote(key)};
+            if (!found || found->resolved || !vote || vote->revealed) continue;
+            const Decision& decision{*found};
+            if (period != decision.close_period || !reveal_phase) continue;
             // Only the vote that was sealed counts.
-            if (!IsValidAnswer(decision.listing, reveal->answer) || VoteCommitment(reveal->decision, reveal->voter, reveal->answer, reveal->salt) != vote->second.commitment) continue;
-            NoteVote(vote->first);
-            vote->second.revealed = true;
-            vote->second.answer = reveal->answer;
+            if (!IsValidAnswer(decision.listing, reveal->answer) || VoteCommitment(reveal->decision, reveal->voter, reveal->answer, reveal->salt) != vote->commitment) continue;
+            Vote revealed{*vote};
+            revealed.revealed = true;
+            revealed.answer = reveal->answer;
+            SetVote(key, revealed);
         }
     }
     return true;
@@ -472,24 +638,26 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
 
 void State::Settle(const Id& id, Market& market, std::map<Account, CAmount>& paid)
 {
-    NoteMarket(id);
     std::vector<int64_t> outcomes;
-    for (const Id& decision : market.opening.decisions) outcomes.push_back(m_decisions.at(decision).outcome);
+    for (const Id& decision : market.opening.decisions) outcomes.push_back(Assert(GetDecision(decision))->outcome);
 
     // Every share is paid what its state came to. The positions of a market are next to
-    // each other in the map, in the order of the accounts.
+    // each other in the store, in the order of the accounts.
     CAmount left{market.treasury};
-    auto position{m_positions.lower_bound(PositionKey{id, Account{}, 0})};
-    while (position != m_positions.end() && position->first.market == id) {
-        const __int128 due{static_cast<__int128>(position->second) * StatePayout(outcomes, position->first.state) / ONE};
+    std::vector<std::pair<PositionKey, int64_t>> positions;
+    ForEachPositionIn(id, [&](const PositionKey& key, int64_t shares) {
+        positions.emplace_back(key, shares);
+        return true;
+    });
+    for (const auto& [key, shares] : positions) {
+        const __int128 due{static_cast<__int128>(shares) * StatePayout(outcomes, key.state) / ONE};
         // The treasury covers what is due; the bound is there in case it ever did not.
         const CAmount payment{static_cast<CAmount>(std::min<__int128>(due, left))};
         if (payment > 0) {
-            paid[position->first.account] += payment;
+            paid[key.account] += payment;
             left -= payment;
         }
-        NotePosition(position->first);
-        position = m_positions.erase(position);
+        SetPosition(key, 0);
     }
     // What the market maker did not lose goes back to who funded it.
     if (left > 0) paid[market.opening.author] += left;
@@ -500,10 +668,10 @@ void State::Settle(const Id& id, Market& market, std::map<Account, CAmount>& pai
     const CAmount per_decision{(market.fees / 4) / static_cast<CAmount>(market.opening.decisions.size())};
     CAmount to_market_author{market.fees - to_voters};
     for (const Id& decision : market.opening.decisions) {
-        if (per_decision > 0) paid[m_decisions.at(decision).listing.author] += per_decision;
+        if (per_decision > 0) paid[Assert(GetDecision(decision))->listing.author] += per_decision;
         to_market_author -= per_decision;
     }
-    m_voter_pot += to_voters;
+    SetVoterPot(VoterPot() + to_voters);
     if (to_market_author > 0) paid[market.opening.author] += to_market_author;
 
     market.treasury = 0;
@@ -513,12 +681,13 @@ void State::Settle(const Id& id, Market& market, std::map<Account, CAmount>& pai
 
 void State::Resolve(uint32_t new_period, uint32_t first_open, const Consensus::HivemindParams& params, std::map<Account, CAmount>& paid)
 {
-    // The decisions whose vote is over.
-    std::vector<Id> batch;
-    for (const auto& [id, decision] : m_decisions) {
-        if (!decision.resolved && decision.close_period < new_period) batch.push_back(id);
-    }
+    // The decisions whose vote is over: open ones whose vote closed before this period, in the order
+    // of their ids.
+    std::vector<Id> batch{IdsIn(*m_view, sidechain::StoreBytes{OPEN_BY_CLOSE}, [&](std::span<const unsigned char> rest) {
+        return sidechain::KeyCodec<uint32_t>::Decode(rest) < new_period;
+    })};
     if (batch.empty()) return;
+    std::sort(batch.begin(), batch.end());
 
     // Everyone who holds reputation takes part. Those who revealed a vote on these decisions
     // are voters, in the order of the accounts; the others are scored alike, as having
@@ -526,9 +695,10 @@ void State::Resolve(uint32_t new_period, uint32_t first_open, const Consensus::H
     // reputation over many accounts adds nothing to the work.
     std::set<Account> voted;
     for (const Id& id : batch) {
-        for (auto vote{m_votes.lower_bound(VoteKey{id, Account{}})}; vote != m_votes.end() && vote->first.decision == id; ++vote) {
-            if (vote->second.revealed) voted.insert(vote->first.voter);
-        }
+        ForEachVoteOn(id, [&](const VoteKey& key, const Vote& vote) {
+            if (vote.revealed) voted.insert(key.voter);
+            return true;
+        });
     }
     std::vector<Account> voters, silent;
     std::vector<int64_t> reputation, silent_reputation;
@@ -537,8 +707,8 @@ void State::Resolve(uint32_t new_period, uint32_t first_open, const Consensus::H
     // ever more accounts would otherwise make the resolution as large as one likes. Smaller holders
     // are scored with those who did not vote.
     const int64_t min_voter{params.reputation_supply / MAX_VOTERS};
-    for (const auto& [account, amount] : m_reputation) {
-        if (amount <= 0) continue;
+    ForEachReputation([&](const Account& account, int64_t amount) {
+        if (amount <= 0) return true;
         if (voted.contains(account) && amount >= min_voter) {
             voters.push_back(account);
             reputation.push_back(amount);
@@ -547,21 +717,23 @@ void State::Resolve(uint32_t new_period, uint32_t first_open, const Consensus::H
             silent_reputation.push_back(amount);
             silent_total += amount;
         }
-    }
+        return true;
+    });
     if (silent_total > 0) reputation.push_back(silent_total);
+    std::vector<Decision> decisions;
+    for (const Id& id : batch) decisions.push_back(*Assert(GetDecision(id)));
     std::vector<bool> scaled, last_round;
-    for (const Id& id : batch) {
-        scaled.push_back(m_decisions.at(id).listing.scaled);
-        last_round.push_back(m_decisions.at(id).rolls >= params.max_rolls);
+    for (const Decision& decision : decisions) {
+        scaled.push_back(decision.listing.scaled);
+        last_round.push_back(decision.rolls >= params.max_rolls);
     }
     std::vector<std::vector<int64_t>> votes(reputation.size(), std::vector<int64_t>(batch.size(), VOTE_MISSING));
     for (size_t j{0}; j < batch.size(); ++j) {
-        const Decision& decision{m_decisions.at(batch[j])};
         for (size_t i{0}; i < voters.size(); ++i) {
-            const auto vote{m_votes.find(VoteKey{batch[j], voters[i]})};
+            const auto vote{GetVote(VoteKey{batch[j], voters[i]})};
             // A vote that was sealed and not revealed is a vote not cast.
-            if (vote == m_votes.end() || !vote->second.revealed) continue;
-            votes[i][j] = vote->second.answer == ANSWER_UNKNOWN ? VOTE_UNKNOWN : AnswerFraction(decision.listing, vote->second.answer);
+            if (!vote || !vote->revealed) continue;
+            votes[i][j] = vote->answer == ANSWER_UNKNOWN ? VOTE_UNKNOWN : AnswerFraction(decisions[j].listing, vote->answer);
         }
     }
 
@@ -569,12 +741,7 @@ void State::Resolve(uint32_t new_period, uint32_t first_open, const Consensus::H
     const Resolution resolution{hivemind::Resolve(reputation, votes, scaled, params.alpha_num, params.alpha_den, params.tolerance, quorum, last_round)};
 
     const auto set_reputation{[&](const Account& account, int64_t amount) {
-        NoteReputation(account);
-        if (amount > 0) {
-            m_reputation[account] = amount;
-        } else {
-            m_reputation.erase(account);
-        }
+        SetReputation(account, amount > 0 ? std::optional{amount} : std::nullopt);
     }};
     for (size_t i{0}; i < voters.size(); ++i) set_reputation(voters[i], resolution.reputation[i]);
     if (silent_total > 0) {
@@ -583,14 +750,14 @@ void State::Resolve(uint32_t new_period, uint32_t first_open, const Consensus::H
         for (size_t i{0}; i < silent.size(); ++i) set_reputation(silent[i], shares[i]);
     }
     for (size_t j{0}; j < batch.size(); ++j) {
-        NoteDecision(batch[j]);
-        Decision& decision{m_decisions.at(batch[j])};
+        Decision decision{*Assert(GetDecision(batch[j]))};
         // The votes are done with, whatever comes of them.
-        auto vote{m_votes.lower_bound(VoteKey{batch[j], Account{}})};
-        while (vote != m_votes.end() && vote->first.decision == batch[j]) {
-            NoteVote(vote->first);
-            vote = m_votes.erase(vote);
-        }
+        std::vector<VoteKey> done;
+        ForEachVoteOn(batch[j], [&](const VoteKey& key, const Vote&) {
+            done.push_back(key);
+            return true;
+        });
+        for (const VoteKey& key : done) SetVote(key, std::nullopt);
 
         if (resolution.outcomes[j] == OUTCOME_ROLL && decision.rolls < params.max_rolls) {
             // The answer is not known yet: the decision is voted again, for as long as before, from
@@ -598,27 +765,34 @@ void State::Resolve(uint32_t new_period, uint32_t first_open, const Consensus::H
             ++decision.rolls;
             decision.close_period = std::max(new_period, first_open) - 1 + decision.listing.vote_periods;
             // Into the first period from then on that has room.
-            while (std::count_if(m_decisions.begin(), m_decisions.end(), [&](const auto& entry) {
-                       return !entry.second.resolved && entry.first != batch[j] && entry.second.close_period == decision.close_period;
-                   }) >= static_cast<std::ptrdiff_t>(MAX_DECISIONS_PER_PERIOD)) {
-                ++decision.close_period;
-            }
+            while (ClosingIn(decision.close_period) >= MAX_DECISIONS_PER_PERIOD) ++decision.close_period;
+            SetDecision(batch[j], decision);
             continue;
         }
         decision.resolved = true;
         // A decision that was put off too often is settled as a tie.
         decision.outcome = resolution.outcomes[j] == OUTCOME_ROLL ? ONE / 2 : resolution.outcomes[j];
-        m_voter_pot += decision.fee;
+        SetVoterPot(VoterPot() + decision.fee);
         decision.fee = 0;
+        SetDecision(batch[j], decision);
     }
 
-    // The markets that are decided now pay.
-    for (auto& [id, market] : m_markets) {
+    // The markets that are decided now pay: those on the decisions just resolved (a market is opened
+    // on open decisions only, so no other can be decided now), in the order of their ids.
+    std::set<Id> candidates;
+    for (const Id& id : batch) {
+        for (const Id& market : IdsIn(*m_view, Head(UNSETTLED_BY_DECISION, id))) candidates.insert(market);
+    }
+    for (const Id& id : candidates) {
+        Market market{*Assert(GetMarket(id))};
         if (market.settled) continue;
-        const bool decided{std::all_of(market.opening.decisions.begin(), market.opening.decisions.end(), [&](const Id& decision) { return m_decisions.at(decision).resolved; })};
+        const bool decided{std::all_of(market.opening.decisions.begin(), market.opening.decisions.end(), [&](const Id& decision) {
+            return Assert(GetDecision(decision))->resolved;
+        })};
         if (decided) {
             Settle(id, market, paid);
             market.settled_period = new_period;
+            SetMarket(id, market);
         }
     }
 
@@ -626,63 +800,68 @@ void State::Resolve(uint32_t new_period, uint32_t first_open, const Consensus::H
     // If nobody voted they wait for the next vote.
     __int128 weight{0};
     for (const int64_t share : resolution.participation) weight += share;
-    if (weight > 0 && m_voter_pot > 0) {
+    const CAmount pot{VoterPot()};
+    if (weight > 0 && pot > 0) {
         CAmount dealt{0};
         for (size_t i{0}; i < voters.size(); ++i) {
-            const CAmount share{static_cast<CAmount>(static_cast<__int128>(m_voter_pot) * resolution.participation[i] / weight)};
+            const CAmount share{static_cast<CAmount>(static_cast<__int128>(pot) * resolution.participation[i] / weight)};
             if (share > 0) paid[voters[i]] += share;
             dealt += share;
         }
         // What rounding left over waits too.
-        m_voter_pot -= dealt;
+        SetVoterPot(pot - dealt);
     }
 }
 
 void State::BeginBlock(int height, int64_t main_time, const Consensus::HivemindParams& params, std::vector<CTxOut>& payouts)
 {
-    if (!m_started) {
-        m_started = true;
-        if (params.reputation_supply > 0) {
-            NoteReputation(params.genesis_account);
-            m_reputation[params.genesis_account] = params.reputation_supply;
-        }
+    sidechain::StoreOverlay& out{Writable()};
+    if (!STARTED.Get(*m_view)) {
+        STARTED.Put(out, true);
+        if (params.reputation_supply > 0) SetReputation(params.genesis_account, params.reputation_supply);
     }
     const Clock clock{ClockAt(height, main_time, params)};
+    const uint32_t period{Period()};
+    const bool reveal_phase{RevealPhase()};
     // The clock of the mainchain can go back a little; a period never does, and nor does the
     // phase within a period: once votes are revealed, none can be sealed again until the next.
-    if (clock.period > m_period) {
+    if (clock.period > period) {
         // A decision whose votes could never be revealed -- its last period went by without a
         // block of this chain in the reveal phase, as after a stall or a jump of the clock -- is
         // not put off, which would use up its rounds and in the end force a tie nobody voted on:
         // it is voted on in the first period from now that still has a time for sealing.
         const uint32_t first_open{clock.period + (clock.reveal_phase ? 1 : 0)};
-        for (auto& [id, decision] : m_decisions) {
-            if (decision.resolved || decision.close_period > clock.period) continue;
-            if (decision.close_period == m_period && m_reveal_phase) continue;
+        std::vector<Id> due{IdsIn(*m_view, sidechain::StoreBytes{OPEN_BY_CLOSE}, [&](std::span<const unsigned char> rest) {
+            return sidechain::KeyCodec<uint32_t>::Decode(rest) <= clock.period;
+        })};
+        std::sort(due.begin(), due.end());
+        for (const Id& id : due) {
+            Decision decision{*Assert(GetDecision(id))};
+            if (decision.close_period == period && reveal_phase) continue;
             // Closing in this period, which the clock entered in its reveal phase: if every period
             // of its vote came after the last block, nobody could seal a vote on it.
-            if (decision.close_period == clock.period && (!clock.reveal_phase || decision.close_period + 1 <= m_period + decision.listing.vote_periods)) continue;
+            if (decision.close_period == clock.period && (!clock.reveal_phase || decision.close_period + 1 <= period + decision.listing.vote_periods)) continue;
             uint32_t close_period{first_open - 1 + decision.listing.vote_periods};
             while (ClosingIn(close_period) >= MAX_DECISIONS_PER_PERIOD) ++close_period;
-            NoteDecision(id);
             decision.close_period = close_period;
+            SetDecision(id, decision);
         }
         std::map<Account, CAmount> paid;
         // Periods the chain skipped are resolved one after the other, each on its own decisions.
-        for (uint32_t period{m_period + 1}; period <= clock.period; ++period) Resolve(period, first_open, params, paid);
-        m_period = clock.period;
-        m_reveal_phase = clock.reveal_phase;
+        for (uint32_t p{period + 1}; p <= clock.period; ++p) Resolve(p, first_open, params, paid);
+        PERIOD.Put(out, clock.period);
+        REVEAL.Put(out, clock.reveal_phase);
         for (const auto& [account, amount] : paid) {
             // Dust goes to the voters: a payout costs every node, and a settlement could make many.
             if (height >= params.audit_height && amount < MIN_PAYOUT) {
-                m_voter_pot += amount;
+                SetVoterPot(VoterPot() + amount);
                 continue;
             }
             payouts.push_back(PayAccount(account, amount));
         }
         Prune();
-    } else if (clock.period == m_period) {
-        m_reveal_phase = m_reveal_phase || clock.reveal_phase;
+    } else if (clock.period == period) {
+        REVEAL.Put(out, reveal_phase || clock.reveal_phase);
     }
 }
 
@@ -690,128 +869,21 @@ void State::Prune()
 {
     // Settled markets are kept for a while, to be looked at, then dropped; so are resolved
     // decisions, once no market that is still there is on them.
-    std::set<Id> in_use;
-    for (auto it{m_markets.begin()}; it != m_markets.end();) {
-        const Market& market{it->second};
-        if (market.settled && market.settled_period + PRUNE_AFTER_PERIODS < m_period) {
-            NoteMarket(it->first);
-            it = m_markets.erase(it);
-            continue;
-        }
-        in_use.insert(market.opening.decisions.begin(), market.opening.decisions.end());
-        ++it;
+    const uint32_t period{Period()};
+    if (period <= PRUNE_AFTER_PERIODS) return;
+    const uint32_t before{period - PRUNE_AFTER_PERIODS};
+    for (const Id& id : IdsIn(*m_view, sidechain::StoreBytes{SETTLED_BY_PERIOD}, [&](std::span<const unsigned char> rest) {
+             return sidechain::KeyCodec<uint32_t>::Decode(rest) < before;
+         })) {
+        SetMarket(id, std::nullopt);
     }
-    std::erase_if(m_decisions, [&](const auto& entry) {
-        const Decision& decision{entry.second};
-        const bool drop{decision.resolved && decision.close_period + PRUNE_AFTER_PERIODS < m_period && !in_use.contains(entry.first)};
-        if (drop) NoteDecision(entry.first);
-        return drop;
-    });
-}
-
-namespace {
-/** The entries of `before` that `after` does not have the same: their values in `before`, nullopt where `before` has none. */
-template <typename Key, typename Value>
-std::vector<std::pair<Key, std::optional<Value>>> Changes(const std::map<Key, Value>& before, const std::map<Key, Value>& after)
-{
-    std::vector<std::pair<Key, std::optional<Value>>> changes;
-    auto b{before.begin()};
-    auto a{after.begin()};
-    while (b != before.end() || a != after.end()) {
-        if (a == after.end() || (b != before.end() && b->first < a->first)) {
-            changes.emplace_back(b->first, b->second);
-            ++b;
-        } else if (b == before.end() || a->first < b->first) {
-            changes.emplace_back(a->first, std::nullopt);
-            ++a;
-        } else {
-            if (!(b->second == a->second)) changes.emplace_back(b->first, b->second);
-            ++b;
-            ++a;
-        }
+    for (const Id& id : IdsIn(*m_view, sidechain::StoreBytes{RESOLVED_BY_CLOSE}, [&](std::span<const unsigned char> rest) {
+             return sidechain::KeyCodec<uint32_t>::Decode(rest) < before;
+         })) {
+        // In use while a market that is still there is on it.
+        if (!IdsIn(*m_view, Head(MARKETS_BY_DECISION, id)).empty()) continue;
+        SetDecision(id, std::nullopt);
     }
-    return changes;
-}
-
-template <typename Key, typename Value>
-void Apply(std::map<Key, Value>& map, const std::vector<std::pair<Key, std::optional<Value>>>& changes)
-{
-    for (const auto& [key, value] : changes) {
-        if (value) {
-            map.insert_or_assign(key, *value);
-        } else {
-            map.erase(key);
-        }
-    }
-}
-} // namespace
-
-bool g_check_journal{false};
-
-namespace {
-/** Note the value an entry of `map` has now, as the one to go back to, unless it was noted already. */
-template <typename Key, typename Value>
-void Note(const std::map<Key, Value>& map, const Key& key, std::set<Key>& noted, std::vector<std::pair<Key, std::optional<Value>>>& changes)
-{
-    if (!noted.insert(key).second) return;
-    const auto it{map.find(key)};
-    changes.emplace_back(key, it == map.end() ? std::nullopt : std::optional<Value>{it->second});
-}
-} // namespace
-
-void State::NoteDecision(const Id& id) { if (m_journal) Note(m_decisions, id, m_journal->decisions, m_journal->undo.decisions); }
-void State::NoteMarket(const Id& id) { if (m_journal) Note(m_markets, id, m_journal->markets, m_journal->undo.markets); }
-void State::NotePosition(const PositionKey& key) { if (m_journal) Note(m_positions, key, m_journal->positions, m_journal->undo.positions); }
-void State::NoteVote(const VoteKey& key) { if (m_journal) Note(m_votes, key, m_journal->votes, m_journal->undo.votes); }
-void State::NoteReputation(const Account& account) { if (m_journal) Note(m_reputation, account, m_journal->reputation, m_journal->undo.reputation); }
-
-void State::StartJournal()
-{
-    m_journal.emplace();
-    m_journal->undo.started = m_started;
-    m_journal->undo.period = m_period;
-    m_journal->undo.reveal_phase = m_reveal_phase;
-    m_journal->undo.voter_pot = m_voter_pot;
-}
-
-std::optional<StateUndo> State::EndJournal()
-{
-    if (!m_journal) return std::nullopt;
-    StateUndo undo{std::move(m_journal->undo)};
-    m_journal.reset();
-    if (undo.started == m_started && undo.period == m_period && undo.reveal_phase == m_reveal_phase && undo.voter_pot == m_voter_pot &&
-        undo.decisions.empty() && undo.markets.empty() && undo.positions.empty() && undo.votes.empty() && undo.reputation.empty()) {
-        return std::nullopt;
-    }
-    return undo;
-}
-
-StateUndo State::Diff(const State& before, const State& after)
-{
-    StateUndo undo;
-    undo.started = before.m_started;
-    undo.period = before.m_period;
-    undo.reveal_phase = before.m_reveal_phase;
-    undo.voter_pot = before.m_voter_pot;
-    undo.decisions = Changes(before.m_decisions, after.m_decisions);
-    undo.markets = Changes(before.m_markets, after.m_markets);
-    undo.positions = Changes(before.m_positions, after.m_positions);
-    undo.votes = Changes(before.m_votes, after.m_votes);
-    undo.reputation = Changes(before.m_reputation, after.m_reputation);
-    return undo;
-}
-
-void State::Revert(const StateUndo& undo)
-{
-    m_started = undo.started;
-    m_period = undo.period;
-    m_reveal_phase = undo.reveal_phase;
-    m_voter_pot = undo.voter_pot;
-    Apply(m_decisions, undo.decisions);
-    Apply(m_markets, undo.markets);
-    Apply(m_positions, undo.positions);
-    Apply(m_votes, undo.votes);
-    Apply(m_reputation, undo.reputation);
 }
 
 } // namespace hivemind
