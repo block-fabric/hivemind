@@ -344,12 +344,12 @@ public:
         consensus.sidechain.bundle_retry_delay = 20;
         consensus.sidechain.hivemind.start_time = 1790900000;
         // The test network ran without the audit's rules until then; see HivemindParams.
-        consensus.sidechain.hivemind.audit_height = 1'000'000;
+        consensus.sidechain.hivemind.audit_height = 4200;
         // A test network goes through the voting in hours, not days.
         consensus.sidechain.hivemind.period_seconds = 60 * 60;
         consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("b8d111d9b7f7e29ec30b67f26c5922afa5b2d744");
         // The test network ran without it until then; see SidechainParams.
-        consensus.sidechain.single_bundle_height = 1'000'000;
+        consensus.sidechain.single_bundle_height = 4200;
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
