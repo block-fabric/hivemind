@@ -4,6 +4,7 @@
 
 #include <consensus/params.h>
 #include <primitives/transaction.h>
+#include <streams.h>
 #include <hivemind/state.h>
 #include <hivemind/math.h>
 
@@ -471,6 +472,71 @@ BOOST_AUTO_TEST_CASE(catch_up_does_not_use_up_rolls)
     BOOST_CHECK(!decision.resolved);
     BOOST_CHECK_EQUAL(decision.rolls, 1);
     BOOST_CHECK_EQUAL(decision.close_period, 9U);
+}
+
+BOOST_AUTO_TEST_CASE(journal_undoes_every_block)
+{
+    // What a block changes, as the journal notes it, takes the state back to exactly what it was:
+    // through listings, markets, purchases, refunds, resolution, settlement and pruning.
+    Consensus::HivemindParams params;
+    params.period_blocks = 6;
+    hivemind::State state;
+    std::string reason;
+    int height{0};
+    const auto block{[&](int at, const std::vector<CTransaction>& txs) {
+        const hivemind::State before{state};
+        std::vector<CTxOut> payouts;
+        state.StartJournal();
+        state.BeginBlock(at, 0, params, payouts);
+        for (const CTransaction& tx : txs) BOOST_REQUIRE(state.ApplyTx(tx, at, params, payouts, reason));
+        const auto undo{state.EndJournal()};
+        BOOST_CHECK_EQUAL(undo.has_value(), !(before == state));
+        hivemind::State reverted{state};
+        if (undo) reverted.Revert(*undo);
+        BOOST_CHECK(reverted == before);
+        // Written out and read back, too, as the undo data of a block is.
+        if (undo) {
+            DataStream stream{};
+            stream << *undo;
+            hivemind::StateUndo read;
+            stream >> read;
+            hivemind::State again{state};
+            again.Revert(read);
+            BOOST_CHECK(again == before);
+        }
+        height = at;
+    }};
+    block(1, {});
+    const CTransaction list_a{ActionTx(Listing(1, 1), params.listing_fee, 1)};
+    const CTransaction list_b{ActionTx(Listing(1, 2), params.listing_fee, 2)};
+    // One listing too far ahead, refunded.
+    block(2, {list_a, list_b, ActionTx(Listing(params.max_periods_ahead + 5, 3), params.listing_fee, 3)});
+    const hivemind::Id a{hivemind::MakeId(list_a.GetHash(), 0)}, b{hivemind::MakeId(list_b.GetHash(), 0)};
+    hivemind::OpenMarket open;
+    open.decisions = {a, b};
+    open.liquidity = params.min_liquidity;
+    open.text = "market";
+    const CAmount funding{hivemind::LmsrFunding(open.liquidity, 4)};
+    const CTransaction open_tx{ActionTx(open, funding + state.MarketFee(open.decisions, params), 4)};
+    block(3, {open_tx});
+    const hivemind::Id market{hivemind::MakeId(open_tx.GetHash(), 0)};
+    BOOST_REQUIRE(state.Markets().contains(market));
+    for (uint8_t i{0}; i < 4; ++i) {
+        hivemind::BuyShares buy;
+        buy.market = market;
+        buy.state = i % 4;
+        buy.shares = (i + 1) * ONE;
+        block(4 + i, {ActionTx(buy, 10 * COIN, 10 + i)});
+    }
+    BOOST_CHECK(!state.Positions().empty());
+    // Periods go by: the decisions close with no vote, are put off, resolved in the end, the
+    // market settles and pays, and later both are pruned.
+    while (height < 6 * 500 && !state.Markets().at(market).settled) block(height + 3, {});
+    BOOST_REQUIRE(state.Markets().at(market).settled);
+    BOOST_CHECK(state.Positions().empty());
+    block(height + 6 * (hivemind::PRUNE_AFTER_PERIODS + 2), {});
+    BOOST_CHECK(!state.Markets().contains(market));
+    BOOST_CHECK(!state.Decisions().contains(a));
 }
 
 BOOST_AUTO_TEST_CASE(clock_and_periods)

@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <variant>
 #include <vector>
@@ -305,6 +306,9 @@ void ReadChanges(Stream& s, std::vector<std::pair<Key, std::optional<Value>>>& c
 }
 } // namespace detail
 
+/** Check the journal of every block against a comparison of the whole state (slow; for tests). */
+extern bool g_check_journal;
+
 /** What a block changed in the State: the earlier values of what changed, nullopt where an entry was added. */
 struct StateUndo {
     bool started{false};
@@ -399,6 +403,16 @@ public:
     static StateUndo Diff(const State& before, const State& after);
     void Revert(const StateUndo& undo);
 
+    /**
+     * Note what changes from now on: the earlier value of every entry the first time it is touched.
+     * What a block changed is then had without a copy of the whole state, or comparing it all.
+     */
+    void StartJournal();
+    /** What reverts what changed since StartJournal(), and stop noting; nothing if nothing changed. */
+    std::optional<StateUndo> EndJournal();
+    /** Stop noting, whatever was noted. */
+    void DropJournal() { m_journal.reset(); }
+
 private:
     /** Drop decisions and markets that are long done with. */
     void Prune();
@@ -410,6 +424,23 @@ private:
      */
     void Resolve(uint32_t new_period, uint32_t first_open, const Consensus::HivemindParams& params, std::map<Account, CAmount>& paid);
     void Settle(const Id& id, Market& market, std::map<Account, CAmount>& paid);
+
+    /** The earlier value of an entry, noted before it changes (the first time only). */
+    void NoteDecision(const Id& id);
+    void NoteMarket(const Id& id);
+    void NotePosition(const PositionKey& key);
+    void NoteVote(const VoteKey& key);
+    void NoteReputation(const Account& account);
+
+    struct Journal {
+        StateUndo undo;
+        std::set<Id> decisions, markets;
+        std::set<PositionKey> positions;
+        std::set<VoteKey> votes;
+        std::set<Account> reputation;
+    };
+    //! While a block is applied: what it changed. Neither stored nor compared.
+    std::optional<Journal> m_journal;
 
     //! Whether the reputation has been given to the account that holds it at the start.
     bool m_started{false};

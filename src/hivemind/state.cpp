@@ -353,6 +353,7 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
             decision.height = height;
             decision.close_period = list->event_period + list->vote_periods;
             decision.fee = out.nValue;
+            NoteDecision(MakeId(tx.GetHash(), n));
             m_decisions.emplace(MakeId(tx.GetHash(), n), std::move(decision));
         } else if (const auto* open{std::get_if<OpenMarket>(&*action)}) {
             Market market;
@@ -376,9 +377,11 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
             // listing fees; the rest back to the author.
             const CAmount per_decision{fee / static_cast<CAmount>(open->decisions.size())};
             for (size_t k{0}; k < open->decisions.size(); ++k) {
+                NoteDecision(open->decisions[k]);
                 m_decisions.at(open->decisions[k]).fee += per_decision + (k == 0 ? fee - per_decision * static_cast<CAmount>(open->decisions.size()) : 0);
             }
             if (out.nValue > funding + fee) payouts.push_back(PayAccount(open->author, out.nValue - funding - fee));
+            NoteMarket(MakeId(tx.GetHash(), n));
             m_markets.emplace(MakeId(tx.GetHash(), n), std::move(market));
         } else if (const auto* buy{std::get_if<BuyShares>(&*action)}) {
             const auto it{m_markets.find(buy->market)};
@@ -399,6 +402,8 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
                 refund(buy->account);
                 continue;
             }
+            NoteMarket(buy->market);
+            NotePosition(PositionKey{buy->market, buy->account, buy->state});
             market.shares = std::move(after);
             market.treasury += cost;
             market.fees += fee;
@@ -415,6 +420,8 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
             const CAmount fee{(proceeds * market.opening.fee_bps + 9999) / 10000};
             if (proceeds <= 0 || proceeds - fee < sell->min_proceeds || proceeds - fee < 0 || proceeds > market.treasury ||
                 market.treasury - proceeds < *std::max_element(after.begin(), after.end())) continue;
+            NoteMarket(sell->market);
+            NotePosition(position->first);
             market.shares = std::move(after);
             market.treasury -= proceeds;
             market.fees += fee;
@@ -428,6 +435,8 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
             if (m_reveal_phase) continue;
             const auto from{m_reputation.find(transfer->from)};
             if (from == m_reputation.end() || from->second < transfer->amount) continue;
+            NoteReputation(transfer->from);
+            NoteReputation(transfer->to);
             from->second -= transfer->amount;
             if (from->second == 0) m_reputation.erase(from);
             m_reputation[transfer->to] += transfer->amount;
@@ -443,6 +452,7 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
                 const auto held{m_reputation.find(seal->voter)};
                 if (held == m_reputation.end() || held->second < params.reputation_supply / MAX_VOTERS) continue;
             }
+            NoteVote(VoteKey{seal->decision, seal->voter});
             m_votes[VoteKey{seal->decision, seal->voter}] = Vote{seal->commitment, false, 0};
         } else if (const auto* reveal{std::get_if<RevealVote>(&*action)}) {
             const auto it{m_decisions.find(reveal->decision)};
@@ -452,6 +462,7 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
             if (m_period != decision.close_period || !m_reveal_phase) continue;
             // Only the vote that was sealed counts.
             if (!IsValidAnswer(decision.listing, reveal->answer) || VoteCommitment(reveal->decision, reveal->voter, reveal->answer, reveal->salt) != vote->second.commitment) continue;
+            NoteVote(vote->first);
             vote->second.revealed = true;
             vote->second.answer = reveal->answer;
         }
@@ -461,6 +472,7 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
 
 void State::Settle(const Id& id, Market& market, std::map<Account, CAmount>& paid)
 {
+    NoteMarket(id);
     std::vector<int64_t> outcomes;
     for (const Id& decision : market.opening.decisions) outcomes.push_back(m_decisions.at(decision).outcome);
 
@@ -476,6 +488,7 @@ void State::Settle(const Id& id, Market& market, std::map<Account, CAmount>& pai
             paid[position->first.account] += payment;
             left -= payment;
         }
+        NotePosition(position->first);
         position = m_positions.erase(position);
     }
     // What the market maker did not lose goes back to who funded it.
@@ -556,6 +569,7 @@ void State::Resolve(uint32_t new_period, uint32_t first_open, const Consensus::H
     const Resolution resolution{hivemind::Resolve(reputation, votes, scaled, params.alpha_num, params.alpha_den, params.tolerance, quorum, last_round)};
 
     const auto set_reputation{[&](const Account& account, int64_t amount) {
+        NoteReputation(account);
         if (amount > 0) {
             m_reputation[account] = amount;
         } else {
@@ -569,10 +583,14 @@ void State::Resolve(uint32_t new_period, uint32_t first_open, const Consensus::H
         for (size_t i{0}; i < silent.size(); ++i) set_reputation(silent[i], shares[i]);
     }
     for (size_t j{0}; j < batch.size(); ++j) {
+        NoteDecision(batch[j]);
         Decision& decision{m_decisions.at(batch[j])};
         // The votes are done with, whatever comes of them.
         auto vote{m_votes.lower_bound(VoteKey{batch[j], Account{}})};
-        while (vote != m_votes.end() && vote->first.decision == batch[j]) vote = m_votes.erase(vote);
+        while (vote != m_votes.end() && vote->first.decision == batch[j]) {
+            NoteVote(vote->first);
+            vote = m_votes.erase(vote);
+        }
 
         if (resolution.outcomes[j] == OUTCOME_ROLL && decision.rolls < params.max_rolls) {
             // The answer is not known yet: the decision is voted again, for as long as before, from
@@ -624,7 +642,10 @@ void State::BeginBlock(int height, int64_t main_time, const Consensus::HivemindP
 {
     if (!m_started) {
         m_started = true;
-        if (params.reputation_supply > 0) m_reputation[params.genesis_account] = params.reputation_supply;
+        if (params.reputation_supply > 0) {
+            NoteReputation(params.genesis_account);
+            m_reputation[params.genesis_account] = params.reputation_supply;
+        }
     }
     const Clock clock{ClockAt(height, main_time, params)};
     // The clock of the mainchain can go back a little; a period never does, and nor does the
@@ -643,6 +664,7 @@ void State::BeginBlock(int height, int64_t main_time, const Consensus::HivemindP
             if (decision.close_period == clock.period && (!clock.reveal_phase || decision.close_period + 1 <= m_period + decision.listing.vote_periods)) continue;
             uint32_t close_period{first_open - 1 + decision.listing.vote_periods};
             while (ClosingIn(close_period) >= MAX_DECISIONS_PER_PERIOD) ++close_period;
+            NoteDecision(id);
             decision.close_period = close_period;
         }
         std::map<Account, CAmount> paid;
@@ -672,6 +694,7 @@ void State::Prune()
     for (auto it{m_markets.begin()}; it != m_markets.end();) {
         const Market& market{it->second};
         if (market.settled && market.settled_period + PRUNE_AFTER_PERIODS < m_period) {
+            NoteMarket(it->first);
             it = m_markets.erase(it);
             continue;
         }
@@ -680,7 +703,9 @@ void State::Prune()
     }
     std::erase_if(m_decisions, [&](const auto& entry) {
         const Decision& decision{entry.second};
-        return decision.resolved && decision.close_period + PRUNE_AFTER_PERIODS < m_period && !in_use.contains(entry.first);
+        const bool drop{decision.resolved && decision.close_period + PRUNE_AFTER_PERIODS < m_period && !in_use.contains(entry.first)};
+        if (drop) NoteDecision(entry.first);
+        return drop;
     });
 }
 
@@ -720,6 +745,46 @@ void Apply(std::map<Key, Value>& map, const std::vector<std::pair<Key, std::opti
     }
 }
 } // namespace
+
+bool g_check_journal{false};
+
+namespace {
+/** Note the value an entry of `map` has now, as the one to go back to, unless it was noted already. */
+template <typename Key, typename Value>
+void Note(const std::map<Key, Value>& map, const Key& key, std::set<Key>& noted, std::vector<std::pair<Key, std::optional<Value>>>& changes)
+{
+    if (!noted.insert(key).second) return;
+    const auto it{map.find(key)};
+    changes.emplace_back(key, it == map.end() ? std::nullopt : std::optional<Value>{it->second});
+}
+} // namespace
+
+void State::NoteDecision(const Id& id) { if (m_journal) Note(m_decisions, id, m_journal->decisions, m_journal->undo.decisions); }
+void State::NoteMarket(const Id& id) { if (m_journal) Note(m_markets, id, m_journal->markets, m_journal->undo.markets); }
+void State::NotePosition(const PositionKey& key) { if (m_journal) Note(m_positions, key, m_journal->positions, m_journal->undo.positions); }
+void State::NoteVote(const VoteKey& key) { if (m_journal) Note(m_votes, key, m_journal->votes, m_journal->undo.votes); }
+void State::NoteReputation(const Account& account) { if (m_journal) Note(m_reputation, account, m_journal->reputation, m_journal->undo.reputation); }
+
+void State::StartJournal()
+{
+    m_journal.emplace();
+    m_journal->undo.started = m_started;
+    m_journal->undo.period = m_period;
+    m_journal->undo.reveal_phase = m_reveal_phase;
+    m_journal->undo.voter_pot = m_voter_pot;
+}
+
+std::optional<StateUndo> State::EndJournal()
+{
+    if (!m_journal) return std::nullopt;
+    StateUndo undo{std::move(m_journal->undo)};
+    m_journal.reset();
+    if (undo.started == m_started && undo.period == m_period && undo.reveal_phase == m_reveal_phase && undo.voter_pot == m_voter_pot &&
+        undo.decisions.empty() && undo.markets.empty() && undo.positions.empty() && undo.votes.empty() && undo.reputation.empty()) {
+        return std::nullopt;
+    }
+    return undo;
+}
 
 StateUndo State::Diff(const State& before, const State& after)
 {

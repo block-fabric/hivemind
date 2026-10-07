@@ -252,7 +252,21 @@ bool State::ConnectBlock(const CBlock& block, int height, const Consensus::Sidec
         return false;
     }
     std::vector<CTxOut> payouts, tx_payouts;
-    hivemind::State markets_before{m_hivemind};
+    // What the block changes in the markets is noted as it goes; the whole of them copied and
+    // compared only when asked to check that (-checkhivemindjournal).
+    std::optional<hivemind::State> markets_before;
+    if (hivemind::g_check_journal) markets_before.emplace(m_hivemind);
+    m_hivemind.StartJournal();
+    // A block that fails part way is taken back by its undo data so far: the changes to the
+    // markets with the rest.
+    struct JournalGuard {
+        hivemind::State& state;
+        StateUndo& undo;
+        ~JournalGuard()
+        {
+            if (auto noted{state.EndJournal()}) undo.hivemind = std::move(noted);
+        }
+    } journal_guard{m_hivemind, undo};
     if (!ApplyMainEvents(*bmm_height - 1, mainchain, height, params, undo, payouts, reject_reason)) return false;
     const bool main_pending{MainPending(mainchain, height, params)};
 
@@ -288,7 +302,14 @@ bool State::ConnectBlock(const CBlock& block, int height, const Consensus::Sidec
         return false;
     }
     // What the block changed in the markets, to revert it.
-    if (!(markets_before == m_hivemind)) undo.hivemind = hivemind::State::Diff(markets_before, m_hivemind);
+    undo.hivemind = m_hivemind.EndJournal();
+    if (markets_before) {
+        // Undone by the journal, the markets are what they were, as undone by the comparison.
+        hivemind::State by_journal{m_hivemind}, by_diff{m_hivemind};
+        if (undo.hivemind) by_journal.Revert(*undo.hivemind);
+        if (!(*markets_before == m_hivemind)) by_diff.Revert(hivemind::State::Diff(*markets_before, m_hivemind));
+        assert(by_journal == *markets_before && by_diff == *markets_before);
+    }
 
     minted = 0;
     for (size_t i{0}; i < payouts.size(); ++i) {

@@ -7,6 +7,7 @@
 #include <arith_uint256.h>
 #include <common/args.h>
 #include <common/system.h>
+#include <hivemind/state.h>
 #include <node/coins_view_args.h>
 #include <node/database_args.h>
 #include <tinyformat.h>
@@ -29,6 +30,9 @@ util::Result<void> ApplyArgsManOptions(const ArgsManager& args, ChainstateManage
         // Interpret bare -checkblockindex argument as 1 instead of 0.
         opts.check_block_index = args.GetArg("-checkblockindex")->empty() ? 1 : *value;
     }
+
+    // Hivemind: check the journal of every block against a copy of the markets (regtest by default).
+    hivemind::g_check_journal = args.GetBoolArg("-checkhivemindjournal", opts.chainparams.DefaultConsistencyChecks());
 
     if (auto value{args.GetArg("-minimumchainwork")}) {
         if (auto min_work{uint256::FromUserHex(*value)}) {

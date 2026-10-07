@@ -208,9 +208,8 @@ class HivemindTest(SidechainTest):
         votes = side.getdecision(rain["id"])["votes"]
         assert_equal(sorted(v["voter"] for v in votes), sorted([alice, bob, carol]))
         assert all(not v["revealed"] and "answer" not in v for v in votes)
-        # It is too early to reveal.
-        other.revealvote(carol, rain["id"], "no")
-        self.mine_txs()
+        # It is too early to reveal: the wallet will not make public a vote that would not count.
+        assert_raises_rpc_error(-1, "Votes on this decision are revealed in the reveal phase of its last period", other.revealvote, carol, rain["id"], "no")
         assert all(not v["revealed"] for v in side.getdecision(rain["id"])["votes"])
 
         self.log.info("Vote: then revealed")
@@ -225,8 +224,8 @@ class HivemindTest(SidechainTest):
         other.revealvote(carol, degrees["id"], "99")
         for voter, node in ((alice, side), (bob, other), (carol, other)):
             node.revealvote(voter, late["id"], "unknown")
-        # It is too late to seal.
-        other.sealvote(carol, degrees["id"], "41")
+        # It is too late to seal: the wallet says so (the chain would ignore the seal).
+        assert_raises_rpc_error(-1, "a vote can no longer be sealed in this period", other.sealvote, carol, degrees["id"], "41")
         self.mine_txs()
         assert_equal(self.info()["phase"], "reveal")
         votes = {v["voter"]: v for v in side.getdecision(rain["id"])["votes"]}
