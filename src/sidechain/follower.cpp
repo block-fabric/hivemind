@@ -302,7 +302,6 @@ void Follower::Act()
         LOCK(m_mutex);
         uncommitted.swap(m_uncommitted);
         committed.swap(m_committed);
-        const Mainchain& record{*chainman.m_mainchain};
         for (const uint256& hash : committed) {
             const auto it{m_candidates.find(hash)};
             if (it == m_candidates.end()) continue;
@@ -315,7 +314,6 @@ void Follower::Act()
     if (uncommitted.empty() && committed.empty()) return;
 
     // A block that lost its commitment is no longer valid, and neither is what was built on it.
-    const Mainchain& record{*chainman.m_mainchain};
     // That includes a block whose commitment moved to another mainchain block in the same update:
     // what the mainchain did before its commitment may differ now, so it is checked again, from the
     // list of committed blocks below.
@@ -383,7 +381,7 @@ void Follower::CheckActiveChain()
         // -- are found from the tip down, as far as such a reorg could reach; the lowest block whose
         // commitment moved is checked again, with all above it.
         if (!lowest) {
-            int main_height{chainman.ActiveChainstate().m_scdb.m_side.MainHeight()};
+            int main_height{chainman.ActiveChainstate().SideState().MainHeight()};
             for (CBlockIndex* pindex{chainman.ActiveChain().Tip()}; pindex && pindex->nHeight > 0; pindex = pindex->pprev) {
                 const auto bmm_height{record.CommittedHeight(pindex->GetBlockHash())};
                 if (!bmm_height) break;
@@ -392,7 +390,7 @@ void Follower::CheckActiveChain()
                 // What the mainchain had done before this block is what it had done after its parent.
                 drivechain::BlockUndo undo;
                 if (!chainman.m_blockman.m_drivechain_db->ReadBlockUndo(pindex->GetBlockHash(), undo)) break;
-                main_height = undo.side.main_height;
+                main_height = State::MainHeightBefore(undo.side, main_height);
             }
         }
     }
@@ -439,9 +437,9 @@ void Follower::SendBundle()
     uint256 hash;
     {
         LOCK(::cs_main);
-        const State& side{chainman.ActiveChainstate().m_scdb.m_side};
-        if (side.Bundle()) {
-            hash = side.Bundle()->hash;
+        const State side{chainman.ActiveChainstate().SideState()};
+        if (const auto pending{side.Bundle()}) {
+            hash = pending->hash;
             tx = side.BundleTx();
         }
     }
