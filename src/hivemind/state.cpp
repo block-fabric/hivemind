@@ -394,6 +394,7 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
             // The price may have moved past what the buyer is ready to pay. And whatever the
             // rounding, a market never owes more than it holds.
             if (cost <= 0 || cost + fee > out.nValue || !MoneyRange(market.treasury + cost) ||
+                (height >= params.audit_height && cost < MIN_PURCHASE) ||
                 market.treasury + cost < *std::max_element(after.begin(), after.end())) {
                 refund(buy->account);
                 continue;
@@ -437,6 +438,11 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
             // Votes are sealed from the period after the event until the last third of the last period.
             const bool in_window{m_period > decision.listing.event_period && m_period <= decision.close_period};
             if (!in_window || (m_period == decision.close_period && m_reveal_phase)) continue;
+            // Only reputation that counts in the resolution seals a vote: a seal costs every node.
+            if (height >= params.audit_height) {
+                const auto held{m_reputation.find(seal->voter)};
+                if (held == m_reputation.end() || held->second < params.reputation_supply / MAX_VOTERS) continue;
+            }
             m_votes[VoteKey{seal->decision, seal->voter}] = Vote{seal->commitment, false, 0};
         } else if (const auto* reveal{std::get_if<RevealVote>(&*action)}) {
             const auto it{m_decisions.find(reveal->decision)};
@@ -644,7 +650,14 @@ void State::BeginBlock(int height, int64_t main_time, const Consensus::HivemindP
         for (uint32_t period{m_period + 1}; period <= clock.period; ++period) Resolve(period, first_open, params, paid);
         m_period = clock.period;
         m_reveal_phase = clock.reveal_phase;
-        for (const auto& [account, amount] : paid) payouts.push_back(PayAccount(account, amount));
+        for (const auto& [account, amount] : paid) {
+            // Dust goes to the voters: a payout costs every node, and a settlement could make many.
+            if (height >= params.audit_height && amount < MIN_PAYOUT) {
+                m_voter_pot += amount;
+                continue;
+            }
+            payouts.push_back(PayAccount(account, amount));
+        }
         Prune();
     } else if (clock.period == m_period) {
         m_reveal_phase = m_reveal_phase || clock.reveal_phase;

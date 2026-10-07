@@ -343,6 +343,8 @@ public:
         // The mainchain of the test network votes on a withdrawal bundle within 600 blocks.
         consensus.sidechain.bundle_retry_delay = 20;
         consensus.sidechain.hivemind.start_time = 1790900000;
+        // The test network ran without the audit's rules until then; see HivemindParams.
+        consensus.sidechain.hivemind.audit_height = 1'000'000;
         // A test network goes through the voting in hours, not days.
         consensus.sidechain.hivemind.period_seconds = 60 * 60;
         consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("b8d111d9b7f7e29ec30b67f26c5922afa5b2d744");

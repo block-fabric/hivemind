@@ -233,6 +233,8 @@ public:
     virtual std::optional<uint8_t> getDecisionRolls(const uint256& decision) = 0;
     //! Whether a vote on the decision can be sealed now: not once its votes are being revealed. Nullopt if it is not open.
     virtual std::optional<bool> getDecisionSealable(const uint256& decision) = 0;
+    //! Hivemind: whether a reveal of a vote on the decision, in the next block, counts.
+    virtual std::optional<bool> getDecisionRevealable(const uint256& decision) = 0;
     //! What listing a decision closing in `close_period` costs now.
     virtual CAmount getDecisionListingFee(uint32_t close_period) = 0;
     //! The fee for opening a market on `decisions` now, on top of its funding.

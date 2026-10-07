@@ -86,6 +86,13 @@ struct BIP9Deployment {
 
 /** Parameters of the prediction markets. */
 struct HivemindParams {
+    /**
+     * From this height, the rules of the audit of October 2026, which keep the state from growing for
+     * free: a vote is sealed only by a holder of the reputation that counts in the resolution (at
+     * least reputation_supply / MAX_VOTERS); a purchase costs at least MIN_PURCHASE; payouts of
+     * settlements below MIN_PAYOUT go to the voters' pot instead of the payout queue.
+     */
+    int audit_height{0};
     /** Length of a voting period in seconds of mainchain time. */
     int64_t period_seconds{86400};
     /** If positive, a voting period is this many blocks instead; for tests. */

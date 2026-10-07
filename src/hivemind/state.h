@@ -76,6 +76,8 @@ inline constexpr uint32_t PRUNE_AFTER_PERIODS{30};
 inline constexpr int64_t QUORUM_PERCENT{20};
 /** Least amount a purchase of shares may pay: what cannot be bought is given back, and payouts are not free. */
 inline constexpr CAmount MIN_PURCHASE{10000};
+/** Settlement payouts below this go to the voters' pot (from audit_height): a payout costs every node. */
+inline constexpr CAmount MIN_PAYOUT{1000};
 /** What is kept, for the voters, of coins given back for an action that could not be done. */
 inline constexpr CAmount REFUND_FEE{1000};
 /** Most actions in one transaction. */

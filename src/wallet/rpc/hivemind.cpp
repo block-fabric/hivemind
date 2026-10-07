@@ -33,6 +33,14 @@ Account ParseAccount(const UniValue& value)
     throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "An account is the address of a single key (P2WPKH or P2PKH)");
 }
 
+/** An account that holds shares: paid as P2WPKH, so given as P2WPKH (the key of a P2PKH address may be uncompressed). */
+Account ParseTradeAccount(const UniValue& value)
+{
+    const CTxDestination dest{DecodeDestination(value.get_str())};
+    if (const auto* keyhash{std::get_if<WitnessV0KeyHash>(&dest)}) return Account{*keyhash};
+    throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Shares are held by a P2WPKH address: what they pay is paid there");
+}
+
 /** A new address of the wallet to be an account. */
 Account NewAccount(CWallet& wallet, const std::string& label)
 {
@@ -280,7 +288,7 @@ RPCMethod buyshares()
     const auto quote{pwallet->chain().quoteMarketTrade(buy.market, buy.state, buy.shares)};
     if (!quote) throw JSONRPCError(RPC_INVALID_PARAMETER, pwallet->chain().whyNoMarketTrade(buy.market, buy.state, buy.shares));
     const CAmount max_cost{request.params[3].isNull() ? *quote + *quote / 100 + 1 : AmountFromValue(request.params[3])};
-    buy.account = request.params[4].isNull() ? NewAccount(*pwallet, "market shares") : ParseAccount(request.params[4]);
+    buy.account = request.params[4].isNull() ? NewAccount(*pwallet, "market shares") : ParseTradeAccount(request.params[4]);
     const auto [tx, index]{SendAction(*pwallet, buy, max_cost)};
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", tx->GetHash().GetHex());
@@ -320,7 +328,7 @@ RPCMethod sellshares()
     sell.state = static_cast<uint8_t>(request.params[1].getInt<int>());
     sell.shares = AmountFromValue(request.params[2]);
     if (sell.shares <= 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "The number of shares must be positive");
-    sell.account = ParseAccount(request.params[3]);
+    sell.account = ParseTradeAccount(request.params[3]);
     const auto quote{pwallet->chain().quoteMarketTrade(sell.market, sell.state, -sell.shares)};
     if (!quote) throw JSONRPCError(RPC_INVALID_PARAMETER, pwallet->chain().whyNoMarketTrade(sell.market, sell.state, -sell.shares));
     if (*quote >= 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "Selling these shares would bring nothing");
@@ -424,6 +432,12 @@ RPCMethod revealvote()
     reveal.voter = ParseAccount(request.params[0]);
     reveal.decision = ParseHashV(request.params[1], "decision");
     reveal.answer = ParseAnswer(request.params[2]);
+    // Revealed before the reveal phase, a vote is ignored -- and is no secret any more.
+    if (const auto revealable{pwallet->chain().getDecisionRevealable(reveal.decision)}; !revealable) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "No open decision with this hash");
+    } else if (!*revealable) {
+        throw JSONRPCError(RPC_MISC_ERROR, "Votes on this decision are revealed in the reveal phase of its last period; revealed earlier, a vote would not count and everyone would know it");
+    }
     reveal.salt = VoteSalt(*pwallet, reveal.voter, reveal.decision);
     // A vote sealed just before the decision was put off again carries the salt of the round before.
     const auto commitment{pwallet->chain().getVoteCommitment(reveal.decision, reveal.voter)};

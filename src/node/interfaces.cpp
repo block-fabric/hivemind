@@ -752,7 +752,30 @@ public:
         } else if (next.period == period) {
             reveal = reveal || next.reveal_phase;
         }
-        return !(reveal && it->second.close_period <= period);
+        // The window opens the period after the event, and closes with the last seal block.
+        return period > it->second.listing.event_period && !(reveal && it->second.close_period <= period);
+    }
+    std::optional<bool> getDecisionRevealable(const uint256& decision) override
+    {
+        LOCK(::cs_main);
+        const hivemind::State& state{chainman().ActiveChainstate().m_scdb.m_side.Hivemind()};
+        const auto it{state.Decisions().find(decision)};
+        if (it == state.Decisions().end() || it->second.resolved) return std::nullopt;
+        // A reveal counts in the reveal phase of the decision's last period, as of the next block: one
+        // made before is ignored, and tells everyone the vote.
+        const sidechain::Mainchain& record{*Assert(chainman().m_mainchain)};
+        const auto main_tip{record.GetBlock(record.Height())};
+        const hivemind::Clock next{hivemind::ClockAt(chainman().ActiveChain().Height() + 1, main_tip ? main_tip->time : 0,
+                                                     chainman().GetConsensus().sidechain.hivemind)};
+        uint32_t period{state.Period()};
+        bool reveal{state.RevealPhase()};
+        if (next.period > period) {
+            period = next.period;
+            reveal = next.reveal_phase;
+        } else if (next.period == period) {
+            reveal = reveal || next.reveal_phase;
+        }
+        return reveal && period == it->second.close_period;
     }
     std::string whyNoMarketTrade(const uint256& market, uint8_t state, int64_t shares) override
     {
