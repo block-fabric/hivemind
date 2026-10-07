@@ -55,6 +55,8 @@ checks every trade, every vote and every payout.
 | Quorum | a fifth of the reputation must answer | `QUORUM_PERCENT` |
 | Least purchase of shares | 0.0001 | `MIN_PURCHASE` |
 | Kept of a refund, for the voters | 0.00001 | `REFUND_FEE` |
+| Least payout of a settlement (less goes to the voters) | 0.00001 | `MIN_PAYOUT` |
+| Reputation that seals a vote | a share of `reputation_supply / MAX_VOTERS` at least | `MAX_VOTERS` |
 | Actions per transaction | 16 at most | `MAX_ACTIONS_PER_TX` |
 | Decisions per market | 1 to 4 | `max_market_decisions` |
 | Reputation supply | 100, to one account at the start | `reputation_supply`, `genesis_account` |
@@ -95,7 +97,16 @@ every outcome until the reputation is spread.
   the signature names the first input of the transaction, so it cannot be
   replayed.
 - **Reverting a block** restores the entries of the market state that the
-  block changed, kept with its undo data.
+  block changed, kept with its undo data. As a block is applied, the state
+  notes the earlier value of each entry it touches the first time (a
+  journal): nothing is copied or compared in the size of the whole state.
+  On regtest, `-checkhivemindjournal` checks the journal against a full copy
+  every block.
+- **The state does not grow for free** (from `audit_height`): a purchase costs
+  at least `MIN_PURCHASE`; a vote is sealed only by an account holding the
+  reputation that counts as a voter of its own in the resolution; a settlement
+  payout below `MIN_PAYOUT` goes to the voters' pot rather than taking room in
+  the coinbase.
 - **Sealed votes name their voter**: the commitment covers the voter, so a
   sealed vote cannot be copied by someone who has not formed an opinion. The
   wallet makes a new salt for every round of voting on a decision.
@@ -134,7 +145,15 @@ every outcome until the reputation is spread.
   two hours ahead.
 - **No seal in the reveal phase.** The wallet refuses to seal a vote on a
   decision whose votes are being revealed: put off, the decision would count
-  it in the next round, with a salt the reveal has made public.
+  it in the next round, with a salt the reveal has made public. Nor before the
+  vote opens (the period after the event): the chain would ignore that seal.
+- **No reveal before the reveal phase.** The chain ignores a reveal made
+  before the reveal phase of the decision's last period, and the vote would be
+  public from then on: the wallet refuses it, as of the next block's clock.
+- **Shares are held by P2WPKH accounts.** What a market pays is paid to the
+  P2WPKH output of the account; buying and selling take P2WPKH addresses only,
+  since the key of a P2PKH address may be uncompressed, which P2WPKH cannot
+  pay.
 
 ## Not in this version
 
