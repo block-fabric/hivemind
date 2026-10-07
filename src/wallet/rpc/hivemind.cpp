@@ -48,7 +48,13 @@ std::vector<unsigned char> Sign(const CWallet& wallet, const std::string& messag
     if (result != SigningResult::OK) {
         throw JSONRPCError(RPC_WALLET_ERROR, strprintf("This wallet cannot sign for the account %s: %s", EncodeDestination(WitnessV0KeyHash{account}), SigningResultString(result)));
     }
-    return *Assert(DecodeBase64(signature));
+    std::vector<unsigned char> bytes{*Assert(DecodeBase64(signature))};
+    // The header of a compact signature says whether the key is compressed (31 to 34): the chain only
+    // takes those. An uncompressed key, from an old import, would make an action the chain refuses.
+    if (bytes.size() != 65 || bytes[0] < 31) {
+        throw JSONRPCError(RPC_WALLET_ERROR, strprintf("The key of the account %s is uncompressed: it cannot sign Hivemind actions. Use another account", EncodeDestination(WitnessV0KeyHash{account})));
+    }
+    return bytes;
 }
 
 /**

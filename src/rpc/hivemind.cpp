@@ -29,6 +29,7 @@ Account ParseAccount(const UniValue& value)
 {
     const CTxDestination dest{DecodeDestination(value.get_str())};
     if (const auto* keyhash{std::get_if<WitnessV0KeyHash>(&dest)}) return Account{*keyhash};
+    // A P2PKH account is accepted, but it can only sign with a compressed key: see CheckSignature.
     if (const auto* keyhash{std::get_if<PKHash>(&dest)}) return Account{*keyhash};
     throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "An account is the address of a single key (P2WPKH or P2PKH)");
 }

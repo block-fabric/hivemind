@@ -738,7 +738,21 @@ public:
         const hivemind::State& state{chainman().ActiveChainstate().m_scdb.m_side.Hivemind()};
         const auto it{state.Decisions().find(decision)};
         if (it == state.Decisions().end() || it->second.resolved) return std::nullopt;
-        return !(state.RevealPhase() && it->second.close_period <= state.Period());
+        // A seal goes in the next block: what counts is the clock of that block, which follows the
+        // mainchain as far as the record goes, and never goes back.
+        const sidechain::Mainchain& record{*Assert(chainman().m_mainchain)};
+        const auto main_tip{record.GetBlock(record.Height())};
+        const hivemind::Clock next{hivemind::ClockAt(chainman().ActiveChain().Height() + 1, main_tip ? main_tip->time : 0,
+                                                     chainman().GetConsensus().sidechain.hivemind)};
+        uint32_t period{state.Period()};
+        bool reveal{state.RevealPhase()};
+        if (next.period > period) {
+            period = next.period;
+            reveal = next.reveal_phase;
+        } else if (next.period == period) {
+            reveal = reveal || next.reveal_phase;
+        }
+        return !(reveal && it->second.close_period <= period);
     }
     std::string whyNoMarketTrade(const uint256& market, uint8_t state, int64_t shares) override
     {
