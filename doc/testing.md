@@ -97,3 +97,28 @@ database taken beforehand, which the in-place rollback must give back exactly.
 
 The mainchain targets `drivechain_messages` and `drivechain_scdb` are here too
 (`src/test/fuzz/drivechain.cpp`).
+
+## Hivemind
+
+`src/test/hivemind_tests.cpp`:
+
+| Tests | What they check |
+|---|---|
+| `lmsr_*` | The market maker: costs, prices, funding, and that buying and selling back never makes coins. |
+| `votes_*` | The resolution: <br>• agreement changes nothing; dissenters lose; <br>• reputation counts, not heads; ties, missing and unknown votes; <br>• scaled decisions; quorum; <br>• conservation of reputation, no overflow with many decisions; <br>• put-off decisions; the cap on voters. |
+| `vote_commitment_names_the_voter` | A sealed vote cannot be copied by another voter. |
+| `listing_fee_rises_with_the_period`, `market_fee_counts_every_decision` | Fees rise as periods and decisions fill. |
+| `stall_does_not_use_up_decisions`, `catch_up_does_not_use_up_rolls` | A chain that stalls or skips periods does not force ties. |
+| `refunds_keep_a_fee` | What cannot be done is refunded, less a fee; a purchase is at least `MIN_PURCHASE`. |
+| `journal_undoes_every_block` | Through a market's whole life, each block undone by its journal gives the state back exactly, through serialization too. |
+| `clock_and_periods` | Periods and phases from mainchain time. |
+
+`feature_hivemind.py`, run with `-checkhivemindjournal` on, as on all of
+regtest:
+
+- the reputation's start; listing decisions; opening markets and trading;
+- trading closing when the vote starts;
+- sealing, then revealing; the wallet refuses early reveals and late seals;
+- resolution and settlement;
+- a reorg taking the resolution back and bringing it again;
+- a restart; a decision unknown to the end settled as a tie.
