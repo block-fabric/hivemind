@@ -34,18 +34,22 @@ Account ParseAccount(const UniValue& value)
     throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "An account is the address of a single key (P2WPKH or P2PKH)");
 }
 
-/** The state of the markets at the tip, and the chain parameters. */
+/**
+ * The state of the markets at the tip, and the chain parameters. The state reads the chainstate's
+ * store as it is: a handler holds cs_main for as long as it uses it, or a block connected meanwhile
+ * changes the store under it.
+ */
 struct View {
     hivemind::State state;
     Consensus::HivemindParams params;
     int height;
 };
 
-View GetView(const JSONRPCRequest& request)
+View GetView(const JSONRPCRequest& request) EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
 {
+    AssertLockHeld(::cs_main);
     ChainstateManager& chainman{EnsureAnyChainman(request.context)};
     if (!chainman.GetConsensus().sidechain.enabled) throw JSONRPCError(RPC_MISC_ERROR, "This chain is not running as a sidechain, so it has no markets");
-    LOCK(::cs_main);
     return View{chainman.ActiveChainstate().SideState().Hivemind(), chainman.GetConsensus().sidechain.hivemind, chainman.ActiveHeight()};
 }
 
@@ -149,6 +153,7 @@ RPCMethod gethivemindinfo()
         RPCExamples{HelpExampleCli("gethivemindinfo", "")},
         [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
+    LOCK(::cs_main);
     const View view{GetView(request)};
     UniValue result(UniValue::VOBJ);
     result.pushKV("period", view.state.Period());
@@ -183,6 +188,7 @@ RPCMethod listdecisions()
         RPCExamples{HelpExampleCli("listdecisions", "voting")},
         [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
+    LOCK(::cs_main);
     const View view{GetView(request)};
     UniValue result(UniValue::VARR);
     for (const auto& [id, decision] : view.state.Decisions()) {
@@ -229,6 +235,7 @@ RPCMethod getdecision()
         RPCExamples{HelpExampleCli("getdecision", "\"id\"")},
         [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
+    LOCK(::cs_main);
     const View view{GetView(request)};
     const Id id{ParseHashV(request.params[0], "id")};
     const auto found{view.state.GetDecision(id)};
@@ -268,6 +275,7 @@ RPCMethod listmarkets()
         RPCExamples{HelpExampleCli("listmarkets", "")},
         [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
+    LOCK(::cs_main);
     const View view{GetView(request)};
     UniValue result(UniValue::VARR);
     for (const auto& [id, market] : view.state.Markets()) {
@@ -322,6 +330,7 @@ RPCMethod getmarket()
         RPCExamples{HelpExampleCli("getmarket", "\"id\"")},
         [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
+    LOCK(::cs_main);
     const View view{GetView(request)};
     const Id id{ParseHashV(request.params[0], "id")};
     const auto found{view.state.GetMarket(id)};
@@ -358,6 +367,7 @@ RPCMethod quotetrade()
         RPCExamples{HelpExampleCli("quotetrade", "\"id\" 1 3")},
         [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
+    LOCK(::cs_main);
     const View view{GetView(request)};
     const UniValue& amount{request.params[2]};
     const bool selling{amount.getValStr().starts_with("-")};
@@ -390,6 +400,7 @@ RPCMethod listreputation()
         RPCExamples{HelpExampleCli("listreputation", "")},
         [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
+    LOCK(::cs_main);
     const View view{GetView(request)};
     UniValue result(UniValue::VARR);
     for (const auto& [account, amount] : view.state.Reputation()) {
@@ -421,6 +432,7 @@ RPCMethod listpositions()
         RPCExamples{HelpExampleCli("listpositions", "\"address\"")},
         [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
+    LOCK(::cs_main);
     const View view{GetView(request)};
     const Account account{ParseAccount(request.params[0])};
     UniValue result(UniValue::VARR);

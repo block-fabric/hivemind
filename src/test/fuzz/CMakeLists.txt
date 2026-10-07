@@ -51,6 +51,7 @@ add_executable(fuzz
   drivechain.cpp
   eval_script.cpp
   feefrac.cpp
+  hivemind.cpp
   fee_rate.cpp
   feeratediagram.cpp
   fees.cpp
