@@ -353,8 +353,8 @@ public:
         consensus.sidechain.hivemind.start_time = 1790900000;
         // The test network ran without the audit's rules until then; see HivemindParams. Both audits'
         // rules start together: between the two, ballots would be open to accounts with no reputation.
-        consensus.sidechain.hivemind.audit_height = 5335; // = audit2_height, set with it at deploy
-        consensus.sidechain.hivemind.audit2_height = 5335; // audit 2 rules on the test network: moved out while the third audit's fixes are made
+        consensus.sidechain.hivemind.audit_height = 3742; // audits 2 and 3 on the test network, 300 blocks after the deploy
+        consensus.sidechain.hivemind.audit2_height = 3742; // audits 2 and 3 on the test network, 300 blocks after the deploy
         consensus.sidechain.hivemind.genesis_hash = consensus.hashGenesisBlock;
         // A test network goes through the voting in hours, not days.
         consensus.sidechain.hivemind.period_seconds = 60 * 60;
@@ -363,7 +363,7 @@ public:
         consensus.sidechain.single_bundle_height = 4200;
         // The height of the mainchain block that activated the slot; nothing is left out at 0.
         consensus.sidechain.main_activation_height = 68;
-        consensus.sidechain.audit2_height = 5335; // audit 2 rules on the test network: moved out while the third audit's fixes are made
+        consensus.sidechain.audit2_height = 3742; // audits 2 and 3 on the test network, 300 blocks after the deploy
         // A tenth of the testnet mainchain's withdrawal_min_score (300); proposals within an hour.
         consensus.sidechain.pending_min_score = 30;
         consensus.sidechain.unproposed_expiry_blocks = 60;
