@@ -1122,6 +1122,7 @@ RPCMethod revealvote();
 RPCMethod sealballot();
 RPCMethod revealballot();
 RPCMethod getwalletreputation();
+RPCMethod getwalletpositions();
 RPCMethod refundwithdrawal();
 RPCMethod sendmany();
 RPCMethod fundrawtransaction();
@@ -1207,6 +1208,7 @@ std::span<const CRPCCommand> GetWalletRPCCommands()
         {"wallet", &sealballot},
         {"wallet", &revealballot},
         {"wallet", &getwalletreputation},
+        {"wallet", &getwalletpositions},
         {"wallet", &refundwithdrawal},
         {"wallet", &setlabel},
         {"wallet", &setwalletflag},

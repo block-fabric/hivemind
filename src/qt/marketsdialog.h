@@ -114,7 +114,19 @@ private:
 
     /** Run a command and show its error, if any. */
     std::optional<UniValue> call(const std::string& method, const UniValue& params, bool wallet = false, bool quiet = false);
-    bool isMine(const QString& address);
+    /** What a refresh read of the node and of the wallet, off the GUI thread. */
+    struct Fetched {
+        std::optional<QString> wallet;
+        std::optional<UniValue> info, decisions, markets, positions, reputation, own;
+        //! Whether addresses that were not known yet are the wallet's, by wallet/address.
+        QMap<QString, bool> mine;
+        //! getdecision of the decisions being voted on, by id.
+        QMap<QString, UniValue> details;
+    };
+    /** Show what a refresh read: on the GUI thread. */
+    void apply(Fetched fetched);
+    /** Whether the wallet the refresh was for has the address, as far as the window knows. */
+    bool isMine(const std::optional<QString>& wallet, const QString& address) const;
     const Market* market(const QString& id) const;
     const Decision* decision(const QString& id) const;
     /** What a state of a market stands for, in words. */
@@ -137,6 +149,9 @@ private:
     ClientModel* m_client_model{nullptr};
     NodeRpc::WalletNameFn m_wallet_name;
     QMap<QString, bool> m_mine;
+    //! A refresh is under way, and another was asked for meanwhile.
+    bool m_refreshing{false};
+    bool m_refresh_again{false};
 
     // What the node last said.
     int m_period{0};
@@ -150,6 +165,8 @@ private:
     QVector<Decision> m_decision_list;
     QVector<Position> m_position_list;
     QMap<QString, double> m_reputation_list;
+    //! getdecision of the decisions being voted on, by id.
+    QMap<QString, UniValue> m_decision_details;
 
     QLabel* m_summary{nullptr};
     QLabel* m_status{nullptr};

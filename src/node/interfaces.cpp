@@ -742,6 +742,17 @@ public:
         LOCK(::cs_main);
         return chainman().ActiveChainstate().SideState().Hivemind().Reputation();
     }
+    std::vector<std::tuple<uint256, uint160, uint8_t, int64_t>> getMarketPositions() override
+    {
+        LOCK(::cs_main);
+        // A settled market has no positions left: they are paid and erased as it settles.
+        std::vector<std::tuple<uint256, uint160, uint8_t, int64_t>> positions;
+        chainman().ActiveChainstate().SideState().Hivemind().ForEachPosition([&](const hivemind::PositionKey& key, int64_t shares) {
+            positions.emplace_back(key.market, key.account, key.state, shares);
+            return true;
+        });
+        return positions;
+    }
     std::optional<uint32_t> getReputationSealedUntil(const uint160& account) override
     {
         LOCK(::cs_main);

@@ -717,4 +717,46 @@ RPCMethod getwalletreputation()
     };
 }
 
+RPCMethod getwalletpositions()
+{
+    return RPCMethod{
+        "getwalletpositions",
+        "Returns the shares the accounts of this wallet hold in markets that are not settled, in one call.",
+        {},
+        RPCResult{RPCResult::Type::ARR, "", "",
+        {
+            {RPCResult::Type::OBJ, "", "",
+            {
+                {RPCResult::Type::STR_HEX, "market", "The market"},
+                {RPCResult::Type::STR, "account", "The account"},
+                {RPCResult::Type::NUM, "state", "The state"},
+                {RPCResult::Type::STR_AMOUNT, "shares", "The shares held"},
+            }},
+        }},
+        RPCExamples{HelpExampleCli("getwalletpositions", "")},
+        [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
+{
+    const std::shared_ptr<const CWallet> pwallet{GetWalletForJSONRPCRequest(request)};
+    if (!pwallet) return UniValue::VNULL;
+    const auto positions{pwallet->chain().getMarketPositions()};
+    UniValue result(UniValue::VARR);
+    LOCK(pwallet->cs_wallet);
+    std::map<uint160, bool> mine;
+    for (const auto& [market, account, state, shares] : positions) {
+        // An account is a key hash: the wallet's, whichever address of it the wallet has.
+        auto [it, inserted]{mine.try_emplace(account, false)};
+        if (inserted) it->second = pwallet->IsMine(CTxDestination{WitnessV0KeyHash{account}}) || pwallet->IsMine(CTxDestination{PKHash{account}});
+        if (!it->second) continue;
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("market", market.GetHex());
+        obj.pushKV("account", EncodeDestination(WitnessV0KeyHash{account}));
+        obj.pushKV("state", state);
+        obj.pushKV("shares", ValueFromAmount(shares));
+        result.push_back(std::move(obj));
+    }
+    return result;
+},
+    };
+}
+
 } // namespace wallet

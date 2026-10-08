@@ -955,18 +955,9 @@ std::optional<UniValue> MarketsDialog::call(const std::string& method, const Uni
     return result;
 }
 
-bool MarketsDialog::isMine(const QString& address)
+bool MarketsDialog::isMine(const std::optional<QString>& wallet, const QString& address) const
 {
-    const auto wallet{m_wallet_name()};
-    if (!wallet) return false;
-    const QString key{*wallet + QLatin1Char('/') + address};
-    const auto known{m_mine.constFind(key)};
-    if (known != m_mine.constEnd()) return *known;
-    QString error;
-    const auto info{NodeRpc::Call(m_client_model, "getaddressinfo", Args({address.toStdString()}), error, wallet)};
-    const bool mine{info && (*info)["ismine"].get_bool()};
-    if (info) m_mine.insert(key, mine);
-    return mine;
+    return wallet && m_mine.value(*wallet + QLatin1Char('/') + address, false);
 }
 
 const MarketsDialog::Market* MarketsDialog::market(const QString& id) const
@@ -1548,7 +1539,7 @@ void MarketsDialog::fillBallot()
         bool sealed{false}, revealed{false};
         QString shown;
         int votes{0};
-        if (const auto detail{call("getdecision", Args({d.id.toStdString()}), false, true)}) {
+        if (const auto detail{m_decision_details.constFind(d.id)}; detail != m_decision_details.constEnd()) {
             for (const UniValue& v : (*detail)["votes"].getValues()) {
                 ++votes;
                 if (Text(v["voter"]) != voter) continue;
@@ -1662,13 +1653,13 @@ void MarketsDialog::fillPeriods()
         if (d.status != "voting") continue;
         const int row{m_voting->rowCount()};
         m_voting->insertRow(row);
-        const auto detail{call("getdecision", Args({d.id.toStdString()}), false, true)};
+        const auto detail{m_decision_details.constFind(d.id)};
         m_voting->setItem(row, 0, Item(d.text));
         m_voting->setItem(row, 1, Item(d.scaled ? tr("%1 to %2").arg(d.min).arg(d.max) : tr("yes or no")));
         m_voting->setItem(row, 2, Item(QString::number(d.event_period)));
         m_voting->setItem(row, 3, Item(QString::number(d.close_period)));
         m_voting->setItem(row, 4, Item(untilEndOf(d.close_period)));
-        m_voting->setItem(row, 5, Item(detail ? QString::number((*detail)["votes"].size()) : QString{}));
+        m_voting->setItem(row, 5, Item(detail != m_decision_details.constEnd() ? QString::number((*detail)["votes"].size()) : QString{}));
     }
     FitColumns(m_voting);
     tick();
@@ -1709,7 +1700,68 @@ void MarketsDialog::transfer()
 
 void MarketsDialog::refresh()
 {
-    const auto info{call("gethivemindinfo", Args({}), false, true)};
+    // Off the GUI thread, one at a time: what the node is asked takes cs_main, and blocks can come
+    // faster than it answers. A refresh asked for meanwhile runs once this one is shown.
+    if (m_refreshing) {
+        m_refresh_again = true;
+        return;
+    }
+    m_refreshing = true;
+    ClientModel* const model{m_client_model};
+    const std::optional<QString> wallet{m_wallet_name()};
+    const QMap<QString, bool> known{m_mine};
+    NodeRpc::RunAsync(this, [this, model, wallet, known]() -> std::function<void()> {
+        Fetched fetched;
+        fetched.wallet = wallet;
+        QString error;
+        const auto get{[&](const std::string& method, const UniValue& params, bool of_wallet) -> std::optional<UniValue> {
+            if (of_wallet && !wallet) return std::nullopt;
+            return NodeRpc::Call(model, method, params, error, of_wallet ? wallet : std::nullopt);
+        }};
+        fetched.info = get("gethivemindinfo", Args({}), false);
+        if (fetched.info) {
+            fetched.decisions = get("listdecisions", Args({}), false);
+            fetched.markets = get("listmarkets", Args({}), false);
+            // The shares of this wallet, in one call: not every position of every market.
+            fetched.positions = get("getwalletpositions", Args({}), true);
+            // The largest holders, and the holdings of this wallet in one call: not a question to the
+            // wallet about every account there is, on every block.
+            fetched.reputation = get("listreputation", Args({SHOWN_HOLDERS}), false);
+            fetched.own = get("getwalletreputation", Args({}), true);
+            // The votes on the decisions being voted on, for the ballot and the periods.
+            if (fetched.decisions) {
+                for (const UniValue& d : fetched.decisions->getValues()) {
+                    if (Text(d["status"]) != "voting") continue;
+                    if (auto detail{get("getdecision", Args({d["id"]}), false)}) fetched.details.insert(Text(d["id"]), std::move(*detail));
+                }
+            }
+            // Which authors of decisions are the wallet's: each asked once, then known.
+            if (wallet && fetched.decisions) {
+                for (const UniValue& d : fetched.decisions->getValues()) {
+                    const QString address{Text(d["author"])};
+                    const QString key{*wallet + QLatin1Char('/') + address};
+                    if (known.contains(key) || fetched.mine.contains(key)) continue;
+                    if (const auto info{get("getaddressinfo", Args({address.toStdString()}), true)}) fetched.mine.insert(key, (*info)["ismine"].get_bool());
+                }
+            }
+        }
+        return [this, fetched = std::move(fetched)]() mutable {
+            apply(std::move(fetched));
+            m_refreshing = false;
+            if (m_refresh_again) {
+                m_refresh_again = false;
+                refresh();
+            }
+        };
+    });
+}
+
+void MarketsDialog::apply(Fetched fetched)
+{
+    for (auto it{fetched.mine.cbegin()}; it != fetched.mine.cend(); ++it) m_mine.insert(it.key(), it.value());
+    m_decision_details = std::move(fetched.details);
+    const auto& wallet{fetched.wallet};
+    const auto info{std::move(fetched.info)};
     if (!info) {
         m_summary->setText(tr("This chain is not running as a sidechain, so it has no markets."));
         m_tabs->setEnabled(false);
@@ -1733,7 +1785,7 @@ void MarketsDialog::refresh()
                            .arg((*info)["decisions"].getInt<int>()));
 
     m_decision_list.clear();
-    if (const auto decisions{call("listdecisions", Args({}), false, true)}) {
+    if (const auto& decisions{fetched.decisions}) {
         for (const UniValue& d : decisions->getValues()) {
             Decision decision;
             decision.id = Text(d["id"]);
@@ -1748,14 +1800,14 @@ void MarketsDialog::refresh()
             decision.close_period = d["closeperiod"].getInt<int>();
             if (d.exists("answer")) decision.answer = Text(d["answer"]);
             decision.height = d["height"].getInt<int>();
-            decision.mine = isMine(Text(d["author"]));
+            decision.mine = isMine(wallet, Text(d["author"]));
             m_decision_list.push_back(std::move(decision));
         }
     }
 
     m_market_list.clear();
     m_position_list.clear();
-    if (const auto markets{call("listmarkets", Args({}), false, true)}) {
+    if (const auto& markets{fetched.markets}) {
         for (const UniValue& m : markets->getValues()) {
             Market market;
             market.id = Text(m["id"]);
@@ -1777,31 +1829,29 @@ void MarketsDialog::refresh()
                 if (s.exists("price")) state.price = s["price"].get_real();
                 market.states.push_back(std::move(state));
             }
-            // The shares of this wallet in it.
-            if (market.status != "settled") {
-                if (const auto detail{call("getmarket", Args({market.id.toStdString()}), false, true)}) {
-                    for (const UniValue& p : (*detail)["positions"].getValues()) {
-                        const QString account{Text(p["account"])};
-                        if (!isMine(account)) continue;
-                        m_position_list.push_back({market.id, account, p["state"].getInt<int>(), p["shares"].get_real()});
-                    }
-                }
-            }
             m_market_list.push_back(std::move(market));
+        }
+    }
+    // The shares of this wallet, in the markets that are not settled.
+    if (const auto& positions{fetched.positions}) {
+        for (const UniValue& p : positions->getValues()) {
+            const QString id{Text(p["market"])};
+            if (const Market* in{market(id)}; !in || in->status == "settled") continue;
+            m_position_list.push_back({id, Text(p["account"]), p["state"].getInt<int>(), p["shares"].get_real()});
         }
     }
 
     m_reputation_list.clear();
     // The largest holders, and the holdings of this wallet in one call: not a question to the
     // wallet about every account there is, on every block.
-    if (const auto reputation{call("listreputation", Args({SHOWN_HOLDERS}), false, true)}) {
+    if (const auto& reputation{fetched.reputation}) {
         const QString voter{m_voter->currentText()};
         const double total{(*info)["reputation"].get_real()};
         double mine_total{0};
         QSet<QString> mine;
         m_voter->clear();
-        if (m_wallet_name()) {
-            if (const auto own{call("getwalletreputation", Args({}), /*wallet=*/true, /*quiet=*/true)}) {
+        if (wallet) {
+            if (const auto& own{fetched.own}) {
                 for (const UniValue& holder : own->getValues()) {
                     const QString account{Text(holder["account"])};
                     const double amount{holder["amount"].get_real()};

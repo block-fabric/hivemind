@@ -306,9 +306,12 @@ Node: `gethivemindinfo`, `listdecisions`, `getdecision`, `listmarkets`,
 
 Wallet: `createdecision`, `createmarket`, `buyshares`, `sellshares`,
 `transfervotecoin`, `sealvote`, `revealvote`, `sealballot`, `revealballot`,
-`getwalletreputation`.
+`getwalletreputation`, `getwalletpositions`.
 
-In `hivemind-qt`: Markets, in the navigation bar.
+In `hivemind-qt`: Markets, in the navigation bar. It reads the node off the GUI
+thread, one refresh at a time (blocks that come meanwhile make one more, not
+one each): the wallet's shares come from `getwalletpositions` in one call, not
+from `getmarket` for every market.
 
 ## Code
 

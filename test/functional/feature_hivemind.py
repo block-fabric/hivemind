@@ -162,6 +162,9 @@ class HivemindTest(SidechainTest):
         self.mine_txs()
         dave = buy["account"]
         assert_equal(other.listpositions(dave), [{"market": market["id"], "state": 1, "shares": 3}])
+        # The shares of a wallet, in one call (as the Markets tab reads them).
+        assert_equal(other.getwalletpositions(), [{"market": market["id"], "account": dave, "state": 1, "shares": 3}])
+        assert_equal(side.getwalletpositions(), [])
         # A position holds at least 0.001 shares for each state of its market, whatever they cost.
         assert_greater_than(other.quotetrade(market["id"], 1, Decimal("0.0019")), Decimal("0.001"))
         assert_raises_rpc_error(-8, "A position in this market holds at least 0.002 shares", other.buyshares, market["id"], 1, Decimal("0.0019"))
