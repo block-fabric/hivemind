@@ -1329,6 +1329,35 @@ BOOST_AUTO_TEST_CASE(withdrawal_refunds_count_against_the_payout_bound)
     }
 }
 
+BOOST_AUTO_TEST_CASE(malformed_requests_are_no_failure_of_the_record)
+{
+    // What CheckTx refuses depends on the transaction and the height alone: a block that has it is
+    // invalid whatever the mainchain did, and is not noted as a failure of the record. What depends on
+    // the state (the room for payouts) is.
+    Consensus::HivemindParams params;
+    std::string reason;
+    hivemind::ListDecision no_text{Listing(1, 1)};
+    no_text.text.clear();
+    BOOST_CHECK(!hivemind::CheckTx(ActionTx(no_text, params.listing_fee, 1), 1, params, reason));
+    BOOST_CHECK(sidechain::RecordIndependent(reason));
+    hivemind::BuyShares none{Buy(uint256{1}, TestAccount(1), 0)};
+    BOOST_CHECK(!hivemind::CheckTx(ActionTx(none, COIN, 2), 1, params, reason));
+    BOOST_CHECK(sidechain::RecordIndependent(reason));
+    hivemind::TransferReputation unsigned_transfer;
+    unsigned_transfer.from = TestAccount(1);
+    unsigned_transfer.to = TestAccount(2);
+    unsigned_transfer.amount = 1;
+    BOOST_CHECK(!hivemind::CheckTx(ActionTx(unsigned_transfer, 0, 3), 1, params, reason));
+    BOOST_CHECK_EQUAL(reason, "bad-hm-signature");
+    BOOST_CHECK(sidechain::RecordIndependent(reason));
+    for (const char* other : {"bad-hm-too-many-actions", "bad-hm-format", "bad-hm-coinbase", "bad-hm-vote-periods", "bad-hm-scale",
+                              "bad-hm-listing-fee", "bad-hm-market-decisions", "bad-hm-liquidity", "bad-hm-fee", "bad-hm-funding",
+                              "bad-hm-payment", "bad-hm-proceeds", "bad-hm-transfer", "bad-hm-vote"}) {
+        BOOST_CHECK_MESSAGE(sidechain::RecordIndependent(other), other);
+    }
+    BOOST_CHECK(!sidechain::RecordIndependent("hm-block-payouts-full"));
+}
+
 BOOST_AUTO_TEST_CASE(a_sale_leaves_a_position_or_none)
 {
     // From audit2_height a sale leaves no shares, or shares worth MIN_POSITION: otherwise a purchase and

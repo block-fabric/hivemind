@@ -523,9 +523,15 @@ int32_t State::BundleMainHeight() const { return BUNDLE_MAIN_HEIGHT.Get(*m_view)
 bool RecordIndependent(const std::string& reject_reason)
 {
     // What a block breaks whatever the mainchain did: the form of its withdrawals and commitments,
-    // and the signatures of refunds (checked once the withdrawal is known and free).
+    // and the signatures of refunds (checked once the withdrawal is known and free); and the form and
+    // signatures of what transactions ask of the markets (hivemind::CheckTx), which depend on the
+    // transaction and the height alone.
     static const std::set<std::string> independent{
         "bad-sc-withdrawal", "bad-sc-withdrawal-amount", "bad-sc-refund-signature", "bad-sc-bundle-multiple",
+        "bad-hm-too-many-actions", "bad-hm-format", "bad-hm-coinbase", "bad-hm-text", "bad-hm-vote-periods",
+        "bad-hm-scale", "bad-hm-listing-fee", "bad-hm-market-decisions", "bad-hm-liquidity", "bad-hm-fee",
+        "bad-hm-funding", "bad-hm-shares", "bad-hm-payment", "bad-hm-proceeds", "bad-hm-transfer",
+        "bad-hm-signature", "bad-hm-vote",
     };
     return independent.contains(reject_reason);
 }
