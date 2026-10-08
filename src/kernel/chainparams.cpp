@@ -243,6 +243,9 @@ public:
         // TODO before launch: the hash of the key that holds the reputation at the start. Until it
         // is set nobody can vote on this network.
         consensus.sidechain.hivemind.genesis_account = uint160{};
+        // Set when the slot activates on the mainchain: the height of the block that activated it.
+        consensus.sidechain.main_activation_height = 0;
+        consensus.sidechain.audit2_height = 0;
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
@@ -354,6 +357,9 @@ public:
         consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("b8d111d9b7f7e29ec30b67f26c5922afa5b2d744");
         // The test network ran without it until then; see SidechainParams.
         consensus.sidechain.single_bundle_height = 4200;
+        // The height of the mainchain block that activated the slot; nothing is left out at 0.
+        consensus.sidechain.main_activation_height = 68;
+        consensus.sidechain.audit2_height = 999999999; // AUDIT2_TESTNET: set at deploy
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
@@ -466,6 +472,8 @@ public:
         consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("864b263d30715ac8e9fbda1147d556a768b5a1b4");
         consensus.sidechain.hivemind.audit2_height = 0;
         consensus.sidechain.hivemind.genesis_hash = consensus.hashGenesisBlock;
+        consensus.sidechain.main_activation_height = 0;
+        consensus.sidechain.audit2_height = 0;
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
@@ -525,6 +533,7 @@ public:
             consensus.sidechain.enabled = true;
             consensus.sidechain.slot = *opts.sidechain_slot;
             consensus.sidechain.bundle_retry_delay = 5;
+            consensus.sidechain.audit2_height = 0;
             // A sidechain has no sidechains of its own.
             consensus.drivechain.max_sidechains = 0;
             consensus.coinbase_maturity = 0;
