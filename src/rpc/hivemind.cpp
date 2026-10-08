@@ -145,6 +145,8 @@ RPCMethod gethivemindinfo()
             {RPCResult::Type::NUM, "decisions", "The number of decisions listed"},
             {RPCResult::Type::NUM, "markets", "The number of markets opened"},
             {RPCResult::Type::NUM, "voters", "The number of accounts that hold reputation"},
+            {RPCResult::Type::STR_AMOUNT, "reputation", "The reputation there is"},
+            {RPCResult::Type::STR_AMOUNT, "minreputation", "The least reputation that seals a vote, and that a transfer may leave an account with, other than none"},
             {RPCResult::Type::STR_AMOUNT, "voterpot", "Fees waiting for the voters of the next vote"},
             {RPCResult::Type::STR_AMOUNT, "listingfee", "What listing a decision costs"},
             {RPCResult::Type::NUM, "maxvoteperiods", "The most periods a decision can be voted on for"},
@@ -164,9 +166,16 @@ RPCMethod gethivemindinfo()
         result.pushKV("periodseconds", view.params.period_seconds);
         result.pushKV("starttime", view.params.start_time);
     }
-    result.pushKV("decisions", view.state.Decisions().size());
-    result.pushKV("markets", view.state.Markets().size());
-    result.pushKV("voters", view.state.Reputation().size());
+    // Counted, not copied.
+    size_t decisions{0}, markets{0}, voters{0};
+    view.state.ForEachDecision([&](const Id&, const Decision&) { ++decisions; return true; });
+    view.state.ForEachMarket([&](const Id&, const Market&) { ++markets; return true; });
+    view.state.ForEachReputation([&](const Account&, int64_t) { ++voters; return true; });
+    result.pushKV("decisions", decisions);
+    result.pushKV("markets", markets);
+    result.pushKV("voters", voters);
+    result.pushKV("reputation", ValueFromAmount(view.params.reputation_supply));
+    result.pushKV("minreputation", ValueFromAmount(view.params.reputation_supply / hivemind::MAX_VOTERS));
     result.pushKV("voterpot", ValueFromAmount(view.state.VoterPot()));
     result.pushKV("listingfee", ValueFromAmount(view.params.listing_fee));
     result.pushKV("maxvoteperiods", view.params.max_vote_periods);
@@ -387,8 +396,10 @@ RPCMethod listreputation()
 {
     return RPCMethod{
         "listreputation",
-        "Returns who holds the reputation (votecoin) that votes on decisions.",
-        {},
+        "Returns who holds the reputation (votecoin) that votes on decisions, by account; or the largest holders.",
+        {
+            {"count", RPCArg::Type::NUM, RPCArg::DefaultHint{"all"}, "Only this many of the largest holders, largest first"},
+        },
         RPCResult{RPCResult::Type::ARR, "", "",
         {
             {RPCResult::Type::OBJ, "", "",
@@ -402,8 +413,16 @@ RPCMethod listreputation()
 {
     LOCK(::cs_main);
     const View view{GetView(request)};
+    std::vector<std::pair<Account, int64_t>> holders;
+    view.state.ForEachReputation([&](const Account& account, int64_t amount) { holders.emplace_back(account, amount); return true; });
+    if (!request.params[0].isNull()) {
+        const int count{request.params[0].getInt<int>()};
+        if (count < 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "The count cannot be negative");
+        std::stable_sort(holders.begin(), holders.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+        if (holders.size() > static_cast<size_t>(count)) holders.resize(count);
+    }
     UniValue result(UniValue::VARR);
-    for (const auto& [account, amount] : view.state.Reputation()) {
+    for (const auto& [account, amount] : holders) {
         UniValue obj(UniValue::VOBJ);
         obj.pushKV("account", AccountAddress(account));
         obj.pushKV("amount", ValueFromAmount(amount));

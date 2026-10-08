@@ -88,6 +88,16 @@ class HivemindTest(SidechainTest):
         side.transfervotecoin(alice, bob, 41)
         self.mine_txs()
         assert_equal(self.reputation(), {alice: 40, bob: 30, carol: 30})
+        # A transfer leaves each account with none, or with at least what seals a vote: the holdings,
+        # which every resolution reads, cannot be split ever finer.
+        assert_equal(self.info()["minreputation"], Decimal("0.01"))
+        assert_equal(self.info()["reputation"], 100)
+        assert_raises_rpc_error(-8, "leaves each account with no reputation or with at least 0.01", side.transfervotecoin, alice, bob, Decimal("39.995"))
+        assert_raises_rpc_error(-8, "leaves each account with no reputation or with at least 0.01", side.transfervotecoin, alice, side.getnewaddress(), Decimal("0.001"))
+        # The largest holders, and the holdings of a wallet, each in one call.
+        assert_equal(side.listreputation(1), [{"account": alice, "amount": 40}])
+        assert_equal(side.getwalletreputation(), [{"account": alice, "amount": 40}])
+        assert_equal(sorted(r["account"] for r in other.getwalletreputation()), sorted([bob, carol]))
         period, phase = self.next_clock()
         self.advance(period, "reveal")
         side.transfervotecoin(alice, bob, 1)
@@ -138,6 +148,8 @@ class HivemindTest(SidechainTest):
         assert_equal([s["answers"] for s in rain_market["states"]], ["N", "Y"])
         assert_equal(len(side.getmarket(both["id"])["states"]), 4)
 
+        # A position is opened with at least 0.001: positions are payouts at settlement.
+        assert_raises_rpc_error(-8, "A purchase that opens a position costs at least 0.001", other.buyshares, market["id"], 1, Decimal("0.0001"))
         # Three shares of yes: 10 * ln((e^0.3 + 1) / 2) = 1.61208..., and one percent of fee.
         quote = other.quotetrade(market["id"], 1, 3)
         assert_equal(quote, Decimal("1.61208064") + Decimal("0.01612081"))
@@ -330,6 +342,34 @@ class HivemindTest(SidechainTest):
         # A decision that nobody could answer is no vote to have skipped, nor one to earn by: otherwise
         # anyone could list decisions nobody can answer and take reputation from those who do not vote on them.
         assert_equal(self.reputation(), reputation)
+        self.check_in_sync()
+        assert_equal(other.listreputation(), side.listreputation())
+
+        self.log.info("Ballots: the votes on many decisions in one seal and one reveal")
+        period = self.next_clock()[0]
+        first = side.createdecision("Ballot one?", period)
+        second = side.createdecision("Ballot two?", period, 1, True, 0, 10)
+        self.mine_txs()
+        self.advance(period + 1)
+        votes = {first["id"]: "yes", second["id"]: 7}
+        assert_equal(side.sealballot(alice, votes)["closeperiod"], period + 1)
+        other.sealballot(bob, votes)
+        self.mine_txs()
+        assert_equal(len(side.getdecision(first["id"])["votes"]), 2)
+        assert all(not v["revealed"] for v in side.getdecision(second["id"])["votes"])
+        assert_raises_rpc_error(-1, "revealed in the reveal phase", side.revealballot, alice, votes)
+        self.advance(period + 1, "reveal")
+        assert_raises_rpc_error(-8, "not the answers that were sealed", side.revealballot, alice, {first["id"]: "no", second["id"]: 7})
+        assert_raises_rpc_error(-8, "give its answer", side.revealballot, alice, {first["id"]: "yes"})
+        side.revealballot(alice, votes)
+        other.revealballot(bob, votes)
+        self.mine_txs()
+        assert_equal({v["voter"]: v.get("answer") for v in side.getdecision(first["id"])["votes"]}, {alice: 1, bob: 1})
+        assert_equal({v["voter"]: v.get("answer") for v in side.getdecision(second["id"])["votes"]}, {alice: 7, bob: 7})
+        self.advance(period + 2)
+        self.mine_txs()
+        assert_equal(side.getdecision(first["id"])["answer"], "yes")
+        assert_equal(side.getdecision(second["id"])["answer"], 7)
         self.check_in_sync()
         assert_equal(other.listreputation(), side.listreputation())
 

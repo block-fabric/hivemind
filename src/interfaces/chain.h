@@ -241,6 +241,12 @@ public:
     virtual CAmount getMarketOpeningFee(const std::vector<uint256>& decisions) = 0;
     //! The commitment of the sealed vote of `voter` on `decision`, if there is one.
     virtual std::optional<uint256> getVoteCommitment(const uint256& decision, const uint160& voter) = 0;
+    //! Hivemind: the period in which the vote on an open decision closes; nullopt if it is not open.
+    virtual std::optional<uint32_t> getDecisionClosePeriod(const uint256& decision) = 0;
+    //! Hivemind: the decisions and the commitment of the ballot `voter` sealed for `close_period`, if there is one.
+    virtual std::optional<std::pair<std::vector<uint256>, uint256>> getBallot(uint32_t close_period, const uint160& voter) = 0;
+    //! Hivemind: every holding of reputation, by account.
+    virtual std::map<uint160, int64_t> getReputation() = 0;
 
     //! The parameters of the prediction markets of this chain.
     virtual Consensus::HivemindParams getHivemindParams() = 0;

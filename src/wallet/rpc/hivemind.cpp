@@ -127,6 +127,17 @@ uint256 VoteSalt(CWallet& wallet, const Account& voter, const hivemind::Id& deci
     return VoteSaltOfRound(wallet, voter, decision, *rolls);
 }
 
+/**
+ * What opens the seal of a ballot: a signature by the voter, as for a single vote. One for each period
+ * in which decisions close: it is public once the ballot of that period is revealed, after which no
+ * ballot of that period can be sealed any more.
+ */
+uint256 BallotSalt(CWallet& wallet, const Account& voter, uint32_t close_period)
+{
+    const std::vector<unsigned char> signature{Sign(wallet, strprintf("Hivemind ballot salt period %u", close_period), voter)};
+    return Hash(signature);
+}
+
 int64_t ParseAnswer(const UniValue& value)
 {
     if (value.isStr()) {
@@ -139,6 +150,21 @@ int64_t ParseAnswer(const UniValue& value)
         throw JSONRPCError(RPC_INVALID_PARAMETER, "The answer is \"yes\", \"no\", \"unknown\", or a whole number on the scale of the decision");
     }
     return value.getInt<int64_t>();
+}
+
+/** The answers of a ballot, by decision: {"decision id": answer, ...}. */
+std::map<hivemind::Id, int64_t> ParseBallotAnswers(const UniValue& votes)
+{
+    std::map<hivemind::Id, int64_t> answers;
+    for (const std::string& key : votes.getKeys()) {
+        if (!answers.emplace(ParseHashV(UniValue{key}, "decision"), ParseAnswer(votes[key])).second) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "A decision is named twice");
+        }
+    }
+    if (answers.empty() || answers.size() > hivemind::MAX_DECISIONS_PER_PERIOD) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("A ballot has 1 to %u votes", hivemind::MAX_DECISIONS_PER_PERIOD));
+    }
+    return answers;
 }
 
 std::shared_ptr<CWallet> ReadyWallet(const JSONRPCRequest& request)
@@ -290,6 +316,10 @@ RPCMethod buyshares()
     const auto quote{pwallet->chain().quoteMarketTrade(buy.market, buy.state, buy.shares)};
     if (!quote) throw JSONRPCError(RPC_INVALID_PARAMETER, pwallet->chain().whyNoMarketTrade(buy.market, buy.state, buy.shares));
     const CAmount max_cost{request.params[3].isNull() ? *quote + *quote / 100 + 1 : AmountFromValue(request.params[3])};
+    // A new account holds no position: the chain would give the coins back, less a fee.
+    if (request.params[4].isNull() && *quote < hivemind::MIN_POSITION) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("A purchase that opens a position costs at least %s: buy more shares", FormatMoney(hivemind::MIN_POSITION)));
+    }
     buy.account = request.params[4].isNull() ? NewAccount(*pwallet, "market shares") : ParseTradeAccount(request.params[4]);
     const auto [tx, index]{SendAction(*pwallet, buy, max_cost)};
     UniValue result(UniValue::VOBJ);
@@ -368,6 +398,16 @@ RPCMethod transfervotecoin()
     transfer.to = ParseAccount(request.params[1]);
     transfer.amount = AmountFromValue(request.params[2]);
     if (transfer.amount <= 0 || transfer.from == transfer.to) throw JSONRPCError(RPC_INVALID_PARAMETER, "Move a positive amount to another account");
+    // The chain would ignore a transfer that leaves either account with less than a voter of its own holds.
+    const auto params{pwallet->chain().getHivemindParams()};
+    const int64_t least{params.reputation_supply / hivemind::MAX_VOTERS};
+    const auto holdings{pwallet->chain().getReputation()};
+    const auto held{[&](const Account& account) { const auto it{holdings.find(account)}; return it == holdings.end() ? int64_t{0} : it->second; }};
+    // (More than the account holds, as the chain stands, is sent all the same: mined, it does nothing.)
+    const int64_t left{held(transfer.from) - transfer.amount};
+    if ((left > 0 && left < least) || held(transfer.to) + transfer.amount < least) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("A transfer leaves each account with no reputation or with at least %s", FormatMoney(least)));
+    }
     const auto [tx, index]{SendAction(*pwallet, transfer, 0, transfer.from)};
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", tx->GetHash().GetHex());
@@ -445,20 +485,164 @@ RPCMethod revealvote()
     const auto commitment{pwallet->chain().getVoteCommitment(reveal.decision, reveal.voter)};
     if (!commitment) throw JSONRPCError(RPC_INVALID_PARAMETER, "This account sealed no vote on the decision");
     if (hivemind::VoteCommitment(reveal.decision, reveal.voter, reveal.answer, reveal.salt) != *commitment) {
+        // A vote sealed with the salt of the round before -- mined after the decision was put off --
+        // is no secret: that salt was made public by the reveals of that round. It is not revealed
+        // here; it has to be sealed again, which takes the salt of this round.
         const auto rolls{pwallet->chain().getDecisionRolls(reveal.decision)};
-        bool found{false};
         if (rolls && *rolls > 0) {
             const uint256 earlier{VoteSaltOfRound(*pwallet, reveal.voter, reveal.decision, *rolls - 1)};
             if (hivemind::VoteCommitment(reveal.decision, reveal.voter, reveal.answer, earlier) == *commitment) {
-                reveal.salt = earlier;
-                found = true;
+                throw JSONRPCError(RPC_MISC_ERROR, "This vote was sealed with the salt of the previous round of voting on the decision, which is public: "
+                                                   "anyone can read it. Seal it again with sealvote while votes are sealed, and reveal that");
             }
         }
-        if (!found) throw JSONRPCError(RPC_INVALID_PARAMETER, "That is not the answer that was sealed");
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "That is not the answer that was sealed");
     }
     const auto [tx, index]{SendAction(*pwallet, reveal, 0)};
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", tx->GetHash().GetHex());
+    return result;
+},
+    };
+}
+
+RPCMethod sealballot()
+{
+    return RPCMethod{
+        "sealballot",
+        "Vote on several decisions at once, without showing the votes: one commitment and one signature for all of\n"
+        "them, which takes much less room than a sealed vote each. The decisions must all close in the same period.\n"
+        "Reveal the ballot with revealballot, with the same answers, in the reveal phase of that period. A later\n"
+        "ballot for the same period replaces this one; a later sealvote replaces it for its decision." +
+        HELP_REQUIRING_PASSPHRASE,
+        {
+            {"account", RPCArg::Type::STR, RPCArg::Optional::NO, "The address of this wallet that holds the reputation"},
+            {"votes", RPCArg::Type::OBJ_USER_KEYS, RPCArg::Optional::NO, "The answer to each decision",
+                {
+                    {"decision", RPCArg::Type::STR, RPCArg::Optional::NO, "The id of a decision, and as value \"yes\", \"no\", a whole number on its scale, or \"unknown\""},
+                },
+            },
+        },
+        RPCResult{RPCResult::Type::OBJ, "", "",
+        {
+            {RPCResult::Type::STR_HEX, "txid", "The id of the transaction"},
+            {RPCResult::Type::NUM, "closeperiod", "The period in whose reveal phase the ballot is revealed"},
+        }},
+        RPCExamples{HelpExampleCli("sealballot", "\"address\" '{\"decisionid\": \"yes\", \"otherid\": 42}'")},
+        [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
+{
+    const auto pwallet{ReadyWallet(request)};
+    if (!pwallet) return UniValue::VNULL;
+    hivemind::SealBallot seal;
+    seal.voter = ParseAccount(request.params[0]);
+    const auto answers{ParseBallotAnswers(request.params[1].get_obj())};
+    std::optional<uint32_t> close_period;
+    std::vector<int64_t> ordered;
+    for (const auto& [decision, answer] : answers) {
+        const auto close{pwallet->chain().getDecisionClosePeriod(decision)};
+        const auto sealable{pwallet->chain().getDecisionSealable(decision)};
+        if (!close || !sealable) throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("There is no open decision %s", decision.GetHex()));
+        if (!*sealable) throw JSONRPCError(RPC_MISC_ERROR, strprintf("A vote on the decision %s cannot be sealed now: its vote has not started, or its votes are being revealed", decision.GetHex()));
+        if (close_period && *close != *close_period) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("The votes on the decisions of a ballot close in the same period: %s closes in period %u, not %u", decision.GetHex(), *close, *close_period));
+        }
+        close_period = *close;
+        seal.decisions.push_back(decision);
+        ordered.push_back(answer);
+    }
+    seal.close_period = *close_period;
+    seal.commitment = hivemind::BallotCommitment(seal.voter, seal.close_period, seal.decisions, ordered, BallotSalt(*pwallet, seal.voter, seal.close_period));
+    const auto [tx, index]{SendAction(*pwallet, seal, 0, seal.voter)};
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("txid", tx->GetHash().GetHex());
+    result.pushKV("closeperiod", seal.close_period);
+    return result;
+},
+    };
+}
+
+RPCMethod revealballot()
+{
+    return RPCMethod{
+        "revealballot",
+        "Show the votes of a ballot that was sealed. Possible in the reveal phase of the period in which its decisions close.\n"
+        "The answers have to be those that were sealed; votes that are not shown do not count." +
+        HELP_REQUIRING_PASSPHRASE,
+        {
+            {"account", RPCArg::Type::STR, RPCArg::Optional::NO, "The address of this wallet that sealed the ballot"},
+            {"votes", RPCArg::Type::OBJ_USER_KEYS, RPCArg::Optional::NO, "The answer to each decision, as sealed",
+                {
+                    {"decision", RPCArg::Type::STR, RPCArg::Optional::NO, "The id of a decision, and as value its answer"},
+                },
+            },
+        },
+        RPCResult{RPCResult::Type::OBJ, "", "", {{RPCResult::Type::STR_HEX, "txid", "The id of the transaction"}}},
+        RPCExamples{HelpExampleCli("revealballot", "\"address\" '{\"decisionid\": \"yes\", \"otherid\": 42}'")},
+        [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
+{
+    const auto pwallet{ReadyWallet(request)};
+    if (!pwallet) return UniValue::VNULL;
+    hivemind::RevealBallot reveal;
+    reveal.voter = ParseAccount(request.params[0]);
+    const auto answers{ParseBallotAnswers(request.params[1].get_obj())};
+    const auto close{pwallet->chain().getDecisionClosePeriod(answers.begin()->first)};
+    if (!close) throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("There is no open decision %s", answers.begin()->first.GetHex()));
+    reveal.close_period = *close;
+    const auto ballot{pwallet->chain().getBallot(reveal.close_period, reveal.voter)};
+    if (!ballot) throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("This account sealed no ballot for period %u", reveal.close_period));
+    // Revealed before the reveal phase, the votes are ignored -- and are no secret any more.
+    if (const auto revealable{pwallet->chain().getDecisionRevealable(answers.begin()->first)}; !revealable || !*revealable) {
+        throw JSONRPCError(RPC_MISC_ERROR, "A ballot is revealed in the reveal phase of the period its decisions close in; revealed earlier, it would not count and everyone would know it");
+    }
+    const auto& [decisions, commitment]{*ballot};
+    for (const hivemind::Id& decision : decisions) {
+        const auto it{answers.find(decision)};
+        if (it == answers.end()) throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("The ballot has a vote on %s: give its answer", decision.GetHex()));
+        reveal.answers.push_back(it->second);
+    }
+    if (answers.size() != decisions.size()) throw JSONRPCError(RPC_INVALID_PARAMETER, "The ballot has votes on fewer decisions than that");
+    reveal.salt = BallotSalt(*pwallet, reveal.voter, reveal.close_period);
+    if (hivemind::BallotCommitment(reveal.voter, reveal.close_period, decisions, reveal.answers, reveal.salt) != commitment) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Those are not the answers that were sealed");
+    }
+    const auto [tx, index]{SendAction(*pwallet, reveal, 0)};
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("txid", tx->GetHash().GetHex());
+    return result;
+},
+    };
+}
+
+RPCMethod getwalletreputation()
+{
+    return RPCMethod{
+        "getwalletreputation",
+        "Returns the accounts of this wallet that hold reputation (votecoin), in one call.",
+        {},
+        RPCResult{RPCResult::Type::ARR, "", "",
+        {
+            {RPCResult::Type::OBJ, "", "",
+            {
+                {RPCResult::Type::STR, "account", "The account"},
+                {RPCResult::Type::STR_AMOUNT, "amount", "The reputation it holds"},
+            }},
+        }},
+        RPCExamples{HelpExampleCli("getwalletreputation", "")},
+        [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
+{
+    const std::shared_ptr<const CWallet> pwallet{GetWalletForJSONRPCRequest(request)};
+    if (!pwallet) return UniValue::VNULL;
+    const auto holdings{pwallet->chain().getReputation()};
+    UniValue result(UniValue::VARR);
+    LOCK(pwallet->cs_wallet);
+    for (const auto& [account, amount] : holdings) {
+        // An account is a key hash: the wallet's, whichever address of it the wallet has.
+        if (!pwallet->IsMine(CTxDestination{WitnessV0KeyHash{account}}) && !pwallet->IsMine(CTxDestination{PKHash{account}})) continue;
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("account", EncodeDestination(WitnessV0KeyHash{account}));
+        obj.pushKV("amount", ValueFromAmount(amount));
+        result.push_back(std::move(obj));
+    }
     return result;
 },
     };

@@ -723,6 +723,25 @@ public:
         if (!vote) return std::nullopt;
         return vote->commitment;
     }
+    std::optional<uint32_t> getDecisionClosePeriod(const uint256& decision) override
+    {
+        LOCK(::cs_main);
+        const auto found{chainman().ActiveChainstate().SideState().Hivemind().GetDecision(decision)};
+        if (!found || found->resolved) return std::nullopt;
+        return found->close_period;
+    }
+    std::optional<std::pair<std::vector<uint256>, uint256>> getBallot(uint32_t close_period, const uint160& voter) override
+    {
+        LOCK(::cs_main);
+        const auto ballot{chainman().ActiveChainstate().SideState().Hivemind().GetBallot(hivemind::BallotKey{close_period, voter})};
+        if (!ballot) return std::nullopt;
+        return std::pair{ballot->decisions, ballot->commitment};
+    }
+    std::map<uint160, int64_t> getReputation() override
+    {
+        LOCK(::cs_main);
+        return chainman().ActiveChainstate().SideState().Hivemind().Reputation();
+    }
     std::optional<uint8_t> getDecisionRolls(const uint256& decision) override
     {
         LOCK(::cs_main);
