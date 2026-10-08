@@ -115,10 +115,20 @@ std::pair<CTransactionRef, uint32_t> SendAction(CWallet& wallet, T action, CAmou
 /**
  * What opens the seal of a vote. It is a signature by the voter, which the wallet
  * can make again when the vote is revealed, so that there is nothing to store. It
- * is another for each round of voting on the decision: the salt of a round is
- * public once the vote is revealed, and would open the seal of the next.
+ * is another for each round of voting on the decision, and for each period the
+ * vote closes in: the salt of a round is public once the vote is revealed, and would
+ * open the seal of the next; and a decision whose votes could not be revealed (the
+ * chain went past its reveal phase) is voted on again in the same round, later, by
+ * when a reveal sent meanwhile may have made the salt public.
  */
-uint256 VoteSaltOfRound(CWallet& wallet, const Account& voter, const hivemind::Id& decision, unsigned round)
+uint256 VoteSaltOf(CWallet& wallet, const Account& voter, const hivemind::Id& decision, unsigned round, uint32_t close_period)
+{
+    const std::vector<unsigned char> signature{Sign(wallet, strprintf("Hivemind vote salt %s round %u closing %u", decision.GetHex(), round, close_period), voter)};
+    return Hash(signature);
+}
+
+/** The salt of a round as wallets made it before the period was part of it. */
+uint256 LegacyVoteSalt(CWallet& wallet, const Account& voter, const hivemind::Id& decision, unsigned round)
 {
     const std::vector<unsigned char> signature{Sign(wallet, strprintf("Hivemind vote salt %s round %u", decision.GetHex(), round), voter)};
     return Hash(signature);
@@ -127,8 +137,27 @@ uint256 VoteSaltOfRound(CWallet& wallet, const Account& voter, const hivemind::I
 uint256 VoteSalt(CWallet& wallet, const Account& voter, const hivemind::Id& decision)
 {
     const auto rolls{wallet.chain().getDecisionRolls(decision)};
-    if (!rolls) throw JSONRPCError(RPC_INVALID_PARAMETER, "There is no such decision on the chain");
-    return VoteSaltOfRound(wallet, voter, decision, *rolls);
+    const auto close_period{wallet.chain().getDecisionClosePeriod(decision)};
+    if (!rolls || !close_period) throw JSONRPCError(RPC_INVALID_PARAMETER, "There is no open decision with this id");
+    return VoteSaltOf(wallet, voter, decision, *rolls, *close_period);
+}
+
+//! How many periods back the wallet looks for the one a vote was sealed for, when the decision was moved since.
+constexpr uint32_t SALT_SEARCH_PERIODS{1000};
+
+/**
+ * The salt a sealed vote of a round was made with, if the wallet made it: for the period the decision
+ * closes in now, as an older wallet made it, or for an earlier period (the decision was moved since).
+ */
+std::optional<uint256> FindVoteSalt(CWallet& wallet, const Account& voter, const hivemind::Id& decision, unsigned round,
+                                    uint32_t close_period, int64_t answer, const uint256& commitment)
+{
+    const auto opens{[&](const uint256& salt) { return hivemind::VoteCommitment(decision, voter, answer, salt) == commitment; }};
+    if (const uint256 salt{LegacyVoteSalt(wallet, voter, decision, round)}; opens(salt)) return salt;
+    for (uint32_t period{close_period}; period-- > 0 && close_period - period <= SALT_SEARCH_PERIODS;) {
+        if (const uint256 salt{VoteSaltOf(wallet, voter, decision, round, period)}; opens(salt)) return salt;
+    }
+    return std::nullopt;
 }
 
 /**
@@ -502,23 +531,26 @@ RPCMethod revealvote()
     } else if (!*revealable) {
         throw JSONRPCError(RPC_MISC_ERROR, "Votes on this decision are revealed in the reveal phase of its last period; revealed earlier, a vote would not count and everyone would know it");
     }
-    reveal.salt = VoteSalt(*pwallet, reveal.voter, reveal.decision);
-    // A vote sealed just before the decision was put off again carries the salt of the round before.
     const auto commitment{pwallet->chain().getVoteCommitment(reveal.decision, reveal.voter)};
     if (!commitment) throw JSONRPCError(RPC_INVALID_PARAMETER, "This account sealed no vote on the decision");
+    const auto rolls{pwallet->chain().getDecisionRolls(reveal.decision)};
+    const auto close_period{pwallet->chain().getDecisionClosePeriod(reveal.decision)};
+    if (!rolls || !close_period) throw JSONRPCError(RPC_INVALID_PARAMETER, "No open decision with this hash");
+    reveal.salt = VoteSaltOf(*pwallet, reveal.voter, reveal.decision, *rolls, *close_period);
     if (hivemind::VoteCommitment(reveal.decision, reveal.voter, reveal.answer, reveal.salt) != *commitment) {
-        // A vote sealed with the salt of the round before -- mined after the decision was put off --
-        // is no secret: that salt was made public by the reveals of that round. It is not revealed
-        // here; it has to be sealed again, which takes the salt of this round.
-        const auto rolls{pwallet->chain().getDecisionRolls(reveal.decision)};
-        if (rolls && *rolls > 0) {
-            const uint256 earlier{VoteSaltOfRound(*pwallet, reveal.voter, reveal.decision, *rolls - 1)};
-            if (hivemind::VoteCommitment(reveal.decision, reveal.voter, reveal.answer, earlier) == *commitment) {
-                throw JSONRPCError(RPC_MISC_ERROR, "This vote was sealed with the salt of the previous round of voting on the decision, which is public: "
-                                                   "anyone can read it. Seal it again with sealvote while votes are sealed, and reveal that");
-            }
+        // Sealed in this round, by an older wallet or for the period the decision closed in before it
+        // was moved: what the vote was sealed with opens it.
+        if (const auto salt{FindVoteSalt(*pwallet, reveal.voter, reveal.decision, *rolls, *close_period, reveal.answer, *commitment)}) {
+            reveal.salt = *salt;
+        } else if (*rolls > 0 && FindVoteSalt(*pwallet, reveal.voter, reveal.decision, *rolls - 1, *close_period, reveal.answer, *commitment)) {
+            // A vote sealed with the salt of the round before -- mined after the decision was put off --
+            // is no secret: that salt was made public by the reveals of that round. It is not revealed
+            // here; it has to be sealed again, which takes the salt of this round.
+            throw JSONRPCError(RPC_MISC_ERROR, "This vote was sealed with the salt of the previous round of voting on the decision, which is public: "
+                                               "anyone can read it. Seal it again with sealvote while votes are sealed, and reveal that");
+        } else {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "That is not the answer that was sealed");
         }
-        throw JSONRPCError(RPC_INVALID_PARAMETER, "That is not the answer that was sealed");
     }
     const auto [tx, index]{SendAction(*pwallet, reveal, 0)};
     UniValue result(UniValue::VOBJ);

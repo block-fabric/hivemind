@@ -204,7 +204,11 @@ could never be mined.
   of its answers at once.
 - **Sealed votes name their voter**: the commitment covers the voter, so a
   sealed vote cannot be copied by someone who has not formed an opinion. The
-  wallet makes a new salt for every round of voting on a decision, and one per
+  wallet makes a new salt for every round of voting on a decision and period
+  it closes in (a decision moved by a stall is voted on again in the same
+  round, and a reveal sent in the reveal phase no block was mined in may have
+  made the salt of the old period public; a vote sealed for the old period is
+  still revealed with its own salt), and one per
   chain, period and set of decisions for ballots (a signature of the voter's
   key on a message naming `genesis_hash`, the period and the decisions: a key
   signs the same message on every chain made of this code, so a salt revealed
