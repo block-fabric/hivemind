@@ -251,7 +251,18 @@ bool State::ApplyMainEvents(int main_height, const Mainchain& mainchain, int hei
 
     // The markets go by the clock of the mainchain: resolve what is due, pay what is decided.
     const auto main_block{mainchain.GetBlock(main_height)};
-    hivemind::State{Writable()}.BeginBlock(height, main_block ? main_block->time : 0, params.hivemind, payouts);
+    std::vector<CTxOut> settled;
+    hivemind::State{Writable()}.BeginBlock(height, main_block ? main_block->time : 0, params.hivemind, settled);
+    if (height < params.hivemind.audit2_height) {
+        payouts.insert(payouts.end(), settled.begin(), settled.end());
+    } else {
+        // What the markets pay is of transactions, and waits with what they gave rise to: in the
+        // queue of deposits, a settlement of many positions would hold every deposit back. Ahead of
+        // what the transactions of this block give rise to, as it comes before them.
+        QueueEnds ends{TX_QUEUE_ENDS.Get(*m_view)};
+        for (const CTxOut& o : settled) TX_QUEUE.Put(Writable(), ends.tail++, o);
+        if (!settled.empty()) TX_QUEUE_ENDS.Put(Writable(), ends);
+    }
     return true;
 }
 

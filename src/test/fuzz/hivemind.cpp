@@ -3,7 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 // Hivemind under fuzzing, on the store of the sidechain state: blocks of fuzzed listings, markets,
-// trades, reputation transfers and votes (signed by a few known keys), with periods going by so that
+// trades, reputation transfers, votes and ballots (signed by a few known keys), with periods going by so that
 // decisions resolve, markets settle and both are pruned. After every block: undone, the store is
 // exactly what it was (through serialization of the undo data too); a transaction that breaks a rule
 // changes nothing; every index is exactly what the tables imply; and the reputation adds up to the
@@ -48,7 +48,7 @@ void initialize_hivemind()
 Account AccountOf(const CKey& key) { return Account{key.GetPubKey().GetID()}; }
 
 /** A transaction with one input of its own and the action; signed, if the action is, by `key`. */
-CTransaction ActionTx(Action action, CAmount value, uint32_t salt, const CKey& key)
+CTransaction ActionTx(Action action, CAmount value, uint32_t salt, const CKey& key, const Consensus::HivemindParams& params, int height)
 {
     CMutableTransaction tx;
     tx.vin.emplace_back(COutPoint{Txid::FromUint256(uint256{static_cast<uint8_t>(salt)}), salt});
@@ -56,7 +56,7 @@ CTransaction ActionTx(Action action, CAmount value, uint32_t salt, const CKey& k
     std::visit([&](auto& a) {
         if constexpr (requires { a.signature; }) {
             a.signature.clear();
-            const bool ok{key.SignCompact(MessageHash(ActionMessage(Action{a}, first)), a.signature)};
+            const bool ok{key.SignCompact(MessageHash(ActionMessage(Action{a}, first, params, height)), a.signature)};
             assert(ok);
         }
     }, action);
@@ -128,6 +128,12 @@ void CheckState(const sidechain::StoreView& view, const Consensus::HivemindParam
         });
         assert(total == params.reputation_supply);
     }
+    // No ballot outlives its period.
+    sidechain::Table<BallotKey, Ballot>{0x4e}.ForEach(view, [&](const BallotKey& key, const Ballot& ballot) {
+        assert(key.close_period >= state.Period());
+        assert(!ballot.decisions.empty());
+        return true;
+    });
 }
 } // namespace
 
@@ -137,6 +143,8 @@ FUZZ_TARGET(hivemind_state, .init = initialize_hivemind)
     Consensus::HivemindParams params;
     params.period_blocks = fdp.ConsumeIntegralInRange<int>(3, 8);
     params.audit_height = fdp.ConsumeIntegralInRange<int>(0, 40);
+    params.audit2_height = fdp.ConsumeIntegralInRange<int>(0, 60);
+    params.genesis_hash = uint256{0x42};
     params.max_periods_ahead = 6;
     params.max_vote_periods = 3;
     params.max_rolls = fdp.ConsumeIntegralInRange<uint8_t>(0, 3);
@@ -151,6 +159,8 @@ FUZZ_TARGET(hivemind_state, .init = initialize_hivemind)
     int height{0};
     // Votes sealed, to be revealed as sealed (or not).
     std::vector<std::tuple<size_t, Id, int64_t, uint256>> sealed;
+    // Ballots sealed: voter, period, decisions, answers, salt.
+    std::vector<std::tuple<size_t, uint32_t, std::vector<Id>, std::vector<int64_t>, uint256>> ballots;
 
     for (int blocks{0}; blocks < 60 && fdp.remaining_bytes() > 0; ++blocks) {
         height += fdp.ConsumeIntegralInRange<int>(1, 2 * params.period_blocks);
@@ -169,7 +179,7 @@ FUZZ_TARGET(hivemind_state, .init = initialize_hivemind)
             const Account account{AccountOf(g_keys[who])};
             CAmount value{fdp.ConsumeIntegralInRange<CAmount>(0, 10 * COIN)};
             std::optional<Action> action;
-            switch (fdp.ConsumeIntegralInRange<int>(0, 6)) {
+            switch (fdp.ConsumeIntegralInRange<int>(0, 8)) {
             case 0: {
                 ListDecision list;
                 list.author = account;
@@ -236,6 +246,37 @@ FUZZ_TARGET(hivemind_state, .init = initialize_hivemind)
                 value = 0;
                 break;
             }
+            case 7: {
+                SealBallot ballot;
+                ballot.voter = account;
+                const size_t n{fdp.ConsumeIntegralInRange<size_t>(1, 3)};
+                std::vector<int64_t> answers;
+                for (size_t i{0}; i < n; ++i) {
+                    ballot.decisions.push_back(pick(decisions));
+                    answers.push_back(fdp.ConsumeBool() ? ANSWER_UNKNOWN : fdp.ConsumeIntegralInRange<int64_t>(-1, 11));
+                }
+                const auto first{state.GetDecision(ballot.decisions[0])};
+                ballot.close_period = first && fdp.ConsumeBool() ? first->close_period : state.Period() + fdp.ConsumeIntegralInRange<uint32_t>(0, 3);
+                const uint256 ballot_salt{static_cast<uint8_t>(fdp.ConsumeIntegral<uint8_t>())};
+                ballot.commitment = BallotCommitment(ballot.voter, ballot.close_period, ballot.decisions, answers, ballot_salt);
+                ballots.emplace_back(who, ballot.close_period, ballot.decisions, answers, ballot_salt);
+                action = ballot;
+                value = 0;
+                break;
+            }
+            case 8: {
+                if (ballots.empty()) break;
+                const auto& [voter, close_period, ballot_decisions, answers, ballot_salt]{ballots[fdp.ConsumeIntegralInRange<size_t>(0, ballots.size() - 1)]};
+                RevealBallot reveal;
+                reveal.voter = AccountOf(g_keys[voter]);
+                reveal.close_period = close_period;
+                reveal.answers = answers;
+                if (fdp.ConsumeBool()) reveal.answers.back() += 1;
+                reveal.salt = ballot_salt;
+                action = reveal;
+                value = 0;
+                break;
+            }
             default: {
                 if (sealed.empty()) break;
                 const auto& [voter, decision, answer, vote_salt]{sealed[fdp.ConsumeIntegralInRange<size_t>(0, sealed.size() - 1)]};
@@ -250,7 +291,7 @@ FUZZ_TARGET(hivemind_state, .init = initialize_hivemind)
             }
             }
             if (!action) continue;
-            const CTransaction tx{ActionTx(*action, value, ++salt, g_keys[who])};
+            const CTransaction tx{ActionTx(*action, value, ++salt, g_keys[who], params, height)};
             const uint256 before_tx{sidechain::StoreHash(block)};
             std::string reason;
             if (!state.ApplyTx(tx, height, params, payouts, reason)) {

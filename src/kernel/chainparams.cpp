@@ -238,6 +238,8 @@ public:
                        .message_start = {0x68, 0x76, 0x6d, 0x01}, .default_port = 9855, .bech32_hrp = "hm"});
         // The markets. One day of mainchain time per voting period.
         consensus.sidechain.hivemind.start_time = 1790900000;
+        consensus.sidechain.hivemind.audit2_height = 0;
+        consensus.sidechain.hivemind.genesis_hash = consensus.hashGenesisBlock;
         // TODO before launch: the hash of the key that holds the reputation at the start. Until it
         // is set nobody can vote on this network.
         consensus.sidechain.hivemind.genesis_account = uint160{};
@@ -345,6 +347,8 @@ public:
         consensus.sidechain.hivemind.start_time = 1790900000;
         // The test network ran without the audit's rules until then; see HivemindParams.
         consensus.sidechain.hivemind.audit_height = 4200;
+        consensus.sidechain.hivemind.audit2_height = 999999999; // AUDIT2_TESTNET: set at deploy
+        consensus.sidechain.hivemind.genesis_hash = consensus.hashGenesisBlock;
         // A test network goes through the voting in hours, not days.
         consensus.sidechain.hivemind.period_seconds = 60 * 60;
         consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("b8d111d9b7f7e29ec30b67f26c5922afa5b2d744");
@@ -460,6 +464,8 @@ public:
                        .message_start = {0x68, 0x76, 0x6d, 0x03}, .default_port = 39855, .bech32_hrp = "thm"});
         consensus.sidechain.hivemind.start_time = 1790900000;
         consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("864b263d30715ac8e9fbda1147d556a768b5a1b4");
+        consensus.sidechain.hivemind.audit2_height = 0;
+        consensus.sidechain.hivemind.genesis_hash = consensus.hashGenesisBlock;
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
@@ -541,6 +547,8 @@ public:
         genesis = CreateGenesisBlock(1296688602, 2, 0x207fffff, 1, 50 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
         assert(consensus.hashGenesisBlock == uint256{"0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"});
+        consensus.sidechain.hivemind.audit2_height = 0;
+        consensus.sidechain.hivemind.genesis_hash = consensus.hashGenesisBlock;
         assert(genesis.hashMerkleRoot == uint256{"4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"});
 
         vFixedSeeds.clear(); //!< Regtest mode doesn't have any fixed seeds.

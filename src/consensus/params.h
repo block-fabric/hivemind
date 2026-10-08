@@ -93,6 +93,21 @@ struct HivemindParams {
      * settlements below MIN_PAYOUT go to the voters' pot instead of the payout queue.
      */
     int audit_height{0};
+    /**
+     * From this height, the rules of the second audit of October 2026:
+     *  - what settlements pay waits in the queue of payouts of transactions, not in that of the
+     *    deposits, which a settlement of many positions would otherwise hold back;
+     *  - a purchase that opens a position costs at least MIN_POSITION;
+     *  - a transfer of reputation leaves each of its accounts with none or with at least
+     *    reputation_supply / MAX_VOTERS, so that the reputation, which every resolution reads whole,
+     *    is held by a bounded number of accounts;
+     *  - ballots (SealBallot, RevealBallot): the votes of a voter on many decisions in one action;
+     *  - signed actions name the chain (genesis_hash) and their kind;
+     *  - proceeds of sales and coins given back below MIN_PAYOUT go to the voters' pot.
+     */
+    int audit2_height{0};
+    /** The hash of the genesis block, which signed actions name from audit2_height. */
+    uint256 genesis_hash;
     /** Length of a voting period in seconds of mainchain time. */
     int64_t period_seconds{86400};
     /** If positive, a voting period is this many blocks instead; for tests. */
@@ -116,7 +131,7 @@ struct HivemindParams {
     uint32_t max_market_decisions{4};
     /** Smallest liquidity of a market, in the smallest unit. */
     int64_t min_liquidity{1000000};
-    /** Largest trading fee of a market, in hundredths of a percent. */
+    /** Largest trading fee of a market, in hundredths of a percent (fees are computed in 128 bits: any value is safe). */
     uint16_t max_fee_bps{1000};
     /** Longest text of a decision or of a market, in bytes. */
     uint32_t max_text_size{400};

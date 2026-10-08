@@ -92,7 +92,9 @@ std::pair<CTransactionRef, uint32_t> SendAction(CWallet& wallet, T action, CAmou
     CHECK_NONFATAL(index < mtx.vout.size());
     if constexpr (requires { action.signature; }) {
         action.signature.clear();
-        action.signature = Sign(wallet, hivemind::ActionMessage(Action{action}, mtx.vin[0].prevout), *Assert(signer));
+        // Signed for the next block, which is where the transaction goes: the message names the chain from audit2_height.
+        const int next_height{wallet.chain().getHeight().value_or(-1) + 1};
+        action.signature = Sign(wallet, hivemind::ActionMessage(Action{action}, mtx.vin[0].prevout, wallet.chain().getHivemindParams(), next_height), *Assert(signer));
         mtx.vout[index].scriptPubKey = script_of();
     }
     if (!wallet.SignTransaction(mtx)) throw JSONRPCError(RPC_WALLET_ERROR, "Signing the transaction failed");

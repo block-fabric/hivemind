@@ -794,7 +794,7 @@ bool MemPoolAccept::DrivechainChecks(Workspace& ws)
     if (const Consensus::SidechainParams& side_params{m_active_chainstate.m_chainman.GetConsensus().sidechain}; side_params.enabled) {
         const sidechain::State side{m_active_chainstate.SideState()};
         // What a transaction asks of the markets has to be well formed and signed.
-        if (std::string reject_reason; !hivemind::CheckTx(tx, side_params.hivemind, reject_reason)) {
+        if (std::string reject_reason; !hivemind::CheckTx(tx, m_active_chainstate.m_chain.Height() + 1, side_params.hivemind, reject_reason)) {
             return ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, reject_reason);
         }
         for (const CTxOut& out : tx.vout) {

@@ -2,7 +2,11 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <common/signmessage.h>
 #include <consensus/params.h>
+#include <key.h>
+#include <sidechain/mainchain.h>
+#include <sidechain/state.h>
 #include <primitives/transaction.h>
 #include <streams.h>
 #include <hivemind/state.h>
@@ -418,7 +422,7 @@ BOOST_AUTO_TEST_CASE(refunds_keep_a_fee)
     hivemind::BuyShares buy;
     buy.market = uint256{0x99};
     buy.shares = ONE;
-    BOOST_CHECK(!hivemind::CheckTx(ActionTx(buy, hivemind::MIN_PURCHASE - 1, 1), params, reason));
+    BOOST_CHECK(!hivemind::CheckTx(ActionTx(buy, hivemind::MIN_PURCHASE - 1, 1), 1, params, reason));
     BOOST_CHECK_EQUAL(reason, "bad-hm-payment");
     BOOST_REQUIRE(state.ApplyTx(ActionTx(buy, 50000, 1), 1, params, payouts, reason));
     BOOST_REQUIRE_EQUAL(payouts.size(), 1U);
@@ -428,7 +432,7 @@ BOOST_AUTO_TEST_CASE(refunds_keep_a_fee)
     many.vin.resize(1);
     many.vin[0].prevout = COutPoint{Txid::FromUint256(uint256{7}), 0};
     for (size_t i{0}; i <= hivemind::MAX_ACTIONS_PER_TX; ++i) many.vout.emplace_back(50000, hivemind::ActionScript(buy));
-    BOOST_CHECK(!hivemind::CheckTx(CTransaction{many}, params, reason));
+    BOOST_CHECK(!hivemind::CheckTx(CTransaction{many}, 1, params, reason));
     BOOST_CHECK_EQUAL(reason, "bad-hm-too-many-actions");
 }
 
@@ -598,6 +602,395 @@ BOOST_AUTO_TEST_CASE(clock_and_periods)
     BOOST_CHECK_EQUAL(state.Period(), 6U);
     BOOST_CHECK(!state.RevealPhase());
     BOOST_CHECK(payouts.empty());
+}
+
+namespace {
+CKey TestKey(uint8_t n)
+{
+    std::vector<unsigned char> secret(32, 0);
+    secret[31] = n;
+    CKey key;
+    key.Set(secret.begin(), secret.end(), /*fCompressedIn=*/true);
+    return key;
+}
+
+Account AccountOf(const CKey& key) { return Account{key.GetPubKey().GetID()}; }
+
+Account TestAccount(uint8_t n)
+{
+    Account account;
+    *account.begin() = n;
+    return account;
+}
+
+//! A transaction that asks for `action`, signed by `key` for a block at `height`.
+CTransaction SignedTx(hivemind::Action action, CAmount value, uint8_t salt, const CKey& key, const Consensus::HivemindParams& params, int height)
+{
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vin[0].prevout = COutPoint{Txid::FromUint256(uint256{salt}), 0};
+    std::visit([&](auto& a) {
+        if constexpr (requires { a.signature; }) {
+            a.signature.clear();
+            BOOST_REQUIRE(key.SignCompact(MessageHash(hivemind::ActionMessage(hivemind::Action{a}, tx.vin[0].prevout, params, height)), a.signature));
+        }
+    }, action);
+    tx.vout.emplace_back(value, hivemind::ActionScript(action));
+    return CTransaction{tx};
+}
+
+//! List a decision on `event_period` and open a market on it; the id of the market.
+hivemind::Id ListAndOpen(hivemind::State& state, const Consensus::HivemindParams& params, int height, uint32_t event_period, uint8_t salt, std::vector<CTxOut>& payouts)
+{
+    std::string reason;
+    const CTransaction list{ActionTx(Listing(event_period, salt), params.listing_fee, salt)};
+    BOOST_REQUIRE(state.ApplyTx(list, height, params, payouts, reason));
+    hivemind::OpenMarket open;
+    open.decisions = {hivemind::MakeId(list.GetHash(), 0)};
+    open.liquidity = params.min_liquidity;
+    open.text = "market";
+    const CTransaction tx{ActionTx(open, hivemind::LmsrFunding(open.liquidity, 2) + state.MarketFee(open.decisions, params), salt + 1)};
+    BOOST_REQUIRE(state.ApplyTx(tx, height, params, payouts, reason));
+    const hivemind::Id id{hivemind::MakeId(tx.GetHash(), 0)};
+    BOOST_REQUIRE(state.GetMarket(id));
+    return id;
+}
+
+hivemind::BuyShares Buy(const hivemind::Id& market, const Account& account, int64_t shares)
+{
+    hivemind::BuyShares buy;
+    buy.market = market;
+    buy.account = account;
+    buy.state = 1;
+    buy.shares = shares;
+    return buy;
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(settlement_paid_from_the_transaction_queue)
+{
+    // What a settlement pays waits with the payouts of transactions (from audit2_height), not ahead of
+    // the deposits: a market of many positions cannot hold the deposits back.
+    for (const bool audit2 : {true, false}) {
+        Consensus::SidechainParams params;
+        params.hivemind.period_blocks = 6;
+        params.hivemind.max_rolls = 0;
+        params.hivemind.audit2_height = audit2 ? 0 : 1000000;
+        sidechain::EmptyStore empty;
+        sidechain::StoreOverlay store{empty, /*journal=*/true};
+        sidechain::State side{store};
+        hivemind::State markets{store};
+        sidechain::Mainchain mainchain;
+        sidechain::MainBlock genesis;
+        genesis.hash = uint256{1};
+        BOOST_REQUIRE(mainchain.Append(genesis));
+        sidechain::MainBlock next;
+        next.hash = uint256{2};
+        next.prev_hash = genesis.hash;
+        BOOST_REQUIRE(mainchain.Append(next));
+        std::vector<CTxOut> payouts;
+        std::string reason;
+        BOOST_REQUIRE_MESSAGE(side.ApplyMainEvents(1, mainchain, 1, params, payouts, reason), reason);
+        const hivemind::Id market{ListAndOpen(markets, params.hivemind, 1, 0, 1, payouts)};
+        for (uint8_t i{1}; i <= 3; ++i) BOOST_REQUIRE(markets.ApplyTx(ActionTx(Buy(market, Account{TestAccount(i)}, ONE), 2 * COIN, 10 + i), 1, params.hivemind, payouts, reason));
+        // Period 1, the last of the vote, sealing then revealing; then period 2: the decision, voted on by
+        // nobody, is settled as a tie, and the market pays.
+        BOOST_REQUIRE_MESSAGE(side.ApplyMainEvents(1, mainchain, 6, params, payouts, reason), reason);
+        BOOST_REQUIRE_MESSAGE(side.ApplyMainEvents(1, mainchain, 10, params, payouts, reason), reason);
+        payouts.clear();
+        BOOST_REQUIRE_MESSAGE(side.ApplyMainEvents(1, mainchain, 12, params, payouts, reason), reason);
+        BOOST_REQUIRE(markets.GetMarket(market)->settled);
+        if (audit2) {
+            BOOST_CHECK(payouts.empty());
+            BOOST_CHECK_GE(side.TxQueue().size(), 3U);
+            // A deposit owed in the same block goes first.
+            const CTxOut deposit{5 * COIN, CScript() << OP_TRUE};
+            const auto paid{side.TakePayouts({deposit}, {})};
+            BOOST_REQUIRE_GE(paid.size(), 4U);
+            BOOST_CHECK(paid.front() == deposit);
+        } else {
+            BOOST_CHECK_GE(payouts.size(), 3U);
+            BOOST_CHECK(side.TxQueue().empty());
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(a_position_is_opened_with_min_position)
+{
+    // From audit2_height, a purchase that opens a position pays at least MIN_POSITION: positions,
+    // each a payout at settlement, are not free to make by the thousand. More of a position is not bound so.
+    for (const bool audit2 : {true, false}) {
+        Consensus::HivemindParams params;
+        params.period_blocks = 6;
+        params.audit2_height = audit2 ? 0 : 1000000;
+        TestMarkets markets;
+        hivemind::State& state{markets.state};
+        std::vector<CTxOut> payouts;
+        std::string reason;
+        state.BeginBlock(1, 0, params, payouts);
+        const hivemind::Id market{ListAndOpen(state, params, 1, 2, 1, payouts)};
+        const Account small{TestAccount(7)}, large{TestAccount(8)};
+        // About 0.00025: more than MIN_PURCHASE, less than MIN_POSITION.
+        const int64_t few{50000};
+        BOOST_REQUIRE(*state.Quote(market, 1, few) > hivemind::MIN_PURCHASE && *state.Quote(market, 1, few) < hivemind::MIN_POSITION);
+        payouts.clear();
+        BOOST_REQUIRE(state.ApplyTx(ActionTx(Buy(market, small, few), COIN, 10), 1, params, payouts, reason));
+        BOOST_CHECK_EQUAL(state.PositionOf({market, small, 1}), audit2 ? 0 : few);
+        if (audit2) BOOST_CHECK(payouts.size() == 1 && payouts[0].nValue == COIN - hivemind::REFUND_FEE);
+        BOOST_REQUIRE(state.ApplyTx(ActionTx(Buy(market, large, ONE), COIN, 11), 1, params, payouts, reason));
+        BOOST_CHECK_EQUAL(state.PositionOf({market, large, 1}), ONE);
+        BOOST_REQUIRE(state.ApplyTx(ActionTx(Buy(market, large, few), COIN, 12), 1, params, payouts, reason));
+        BOOST_CHECK_EQUAL(state.PositionOf({market, large, 1}), ONE + few);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(reputation_held_whole)
+{
+    // From audit2_height, a transfer leaves each account with no reputation or at least what a voter
+    // of its own holds: the holdings every resolution reads stay about MAX_VOTERS at most.
+    const CKey key{TestKey(1)};
+    for (const bool audit2 : {true, false}) {
+        Consensus::HivemindParams params;
+        params.period_blocks = 6;
+        params.genesis_account = AccountOf(key);
+        params.audit2_height = audit2 ? 0 : 1000000;
+        const int64_t least{params.reputation_supply / hivemind::MAX_VOTERS};
+        TestMarkets markets;
+        hivemind::State& state{markets.state};
+        std::vector<CTxOut> payouts;
+        std::string reason;
+        state.BeginBlock(1, 0, params, payouts);
+        uint8_t salt{0};
+        const auto transfer{[&](const Account& to, int64_t amount) {
+            hivemind::TransferReputation t;
+            t.from = AccountOf(key);
+            t.to = to;
+            t.amount = amount;
+            BOOST_REQUIRE(state.ApplyTx(SignedTx(t, 0, ++salt, key, params, 1), 1, params, payouts, reason));
+        }};
+        const Account a{TestAccount(1)}, b{TestAccount(2)};
+        transfer(a, least - 1);
+        BOOST_CHECK_EQUAL(state.ReputationOf(a), audit2 ? 0 : least - 1);
+        transfer(b, least);
+        BOOST_CHECK_EQUAL(state.ReputationOf(b), least);
+        // To leave a little behind is refused; to leave nothing is not.
+        const int64_t all{state.ReputationOf(AccountOf(key))};
+        transfer(b, all - 1);
+        BOOST_CHECK_EQUAL(state.ReputationOf(b), audit2 ? least : least + all - 1);
+        if (audit2) {
+            transfer(b, all);
+            BOOST_CHECK_EQUAL(state.ReputationOf(AccountOf(key)), 0);
+            BOOST_CHECK_EQUAL(state.ReputationOf(b), least + all);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(resolution_writes_what_changed)
+{
+    // A resolution that changes no holding writes none, and notes none in the undo data.
+    Consensus::HivemindParams params;
+    params.period_blocks = 6;
+    const CKey key{TestKey(1)};
+    params.genesis_account = AccountOf(key);
+    sidechain::EmptyStore empty;
+    sidechain::StoreOverlay base{empty, /*journal=*/false};
+    std::vector<CTxOut> payouts;
+    std::string reason;
+    {
+        hivemind::State state{base};
+        state.BeginBlock(1, 0, params, payouts);
+        hivemind::TransferReputation t;
+        t.from = AccountOf(key);
+        t.to = Account{TestAccount(1)};
+        t.amount = params.reputation_supply / 2;
+        BOOST_REQUIRE(state.ApplyTx(SignedTx(t, 0, 1, key, params, 1), 1, params, payouts, reason));
+        BOOST_REQUIRE(state.ApplyTx(ActionTx(Listing(0, 2), params.listing_fee, 2), 1, params, payouts, reason));
+        state.BeginBlock(6, 0, params, payouts);
+        state.BeginBlock(10, 0, params, payouts);
+    }
+    // Period 2 resolves the decision: nobody voted, it is put off, and nobody's reputation changes.
+    sidechain::StoreOverlay block{base, /*journal=*/true};
+    hivemind::State state{block};
+    state.BeginBlock(12, 0, params, payouts);
+    BOOST_CHECK_EQUAL(state.Decisions().begin()->second.rolls, 1);
+    for (const auto& [k, v] : block.Changes()) BOOST_CHECK(k.empty() || k[0] != 0x44);
+    BOOST_CHECK_EQUAL(state.Reputation().size(), 2U);
+}
+
+BOOST_AUTO_TEST_CASE(ballots)
+{
+    // One seal and one reveal for the votes of a voter on many decisions.
+    Consensus::HivemindParams params;
+    params.period_blocks = 6;
+    const CKey key{TestKey(1)};
+    const Account voter{AccountOf(key)};
+    params.genesis_account = voter;
+    TestMarkets markets;
+    hivemind::State& state{markets.state};
+    std::vector<CTxOut> payouts;
+    std::string reason;
+    state.BeginBlock(1, 0, params, payouts);
+    std::vector<hivemind::Id> ids;
+    for (uint8_t i{1}; i <= 2; ++i) {
+        const CTransaction list{ActionTx(Listing(0, i), params.listing_fee, i)};
+        BOOST_REQUIRE(state.ApplyTx(list, 1, params, payouts, reason));
+        ids.push_back(hivemind::MakeId(list.GetHash(), 0));
+    }
+    // Votes on both close in period 1: sealed in its first blocks, revealed in its last two.
+    state.BeginBlock(6, 0, params, payouts);
+    uint8_t salt{10};
+    const auto seal{[&](const std::vector<hivemind::Id>& decisions, const std::vector<int64_t>& answers, const uint256& vote_salt, int height) {
+        hivemind::SealBallot ballot;
+        ballot.voter = voter;
+        ballot.close_period = 1;
+        ballot.decisions = decisions;
+        ballot.commitment = hivemind::BallotCommitment(voter, 1, decisions, answers, vote_salt);
+        const CTransaction tx{SignedTx(ballot, 0, ++salt, key, params, height)};
+        BOOST_REQUIRE_MESSAGE(state.ApplyTx(tx, height, params, payouts, reason), reason);
+        return tx;
+    }};
+    const auto reveal{[&](const std::vector<int64_t>& answers, const uint256& vote_salt, int height) {
+        hivemind::RevealBallot r;
+        r.voter = voter;
+        r.close_period = 1;
+        r.answers = answers;
+        r.salt = vote_salt;
+        BOOST_REQUIRE(state.ApplyTx(ActionTx(r, 0, ++salt), height, params, payouts, reason));
+    }};
+    seal(ids, {1, 0}, uint256{1}, 6);
+    for (const auto& id : ids) BOOST_CHECK(state.GetVote({id, voter}));
+    // Before audit2_height there are no ballots: the transaction is not well formed.
+    {
+        Consensus::HivemindParams before{params};
+        before.audit2_height = 100;
+        hivemind::SealBallot ballot;
+        ballot.voter = voter;
+        ballot.close_period = 1;
+        ballot.decisions = ids;
+        BOOST_CHECK(!hivemind::CheckTx(SignedTx(ballot, 0, 99, key, before, 6), 6, before, reason));
+        BOOST_CHECK_EQUAL(reason, "bad-hm-format");
+    }
+    // A new ballot for the period replaces the last: the seal on the decision it leaves out goes.
+    seal({ids[0]}, {1}, uint256{2}, 7);
+    BOOST_CHECK(state.GetVote({ids[0], voter}));
+    BOOST_CHECK(!state.GetVote({ids[1], voter}));
+    // Too early to reveal: nothing happens.
+    reveal({1}, uint256{2}, 7);
+    BOOST_CHECK(!state.GetVote({ids[0], voter})->revealed);
+    state.BeginBlock(10, 0, params, payouts);
+    BOOST_REQUIRE(state.RevealPhase());
+    // The answers of the ballot replaced open nothing; those sealed do.
+    reveal({1, 0}, uint256{1}, 10);
+    BOOST_CHECK(!state.GetVote({ids[0], voter})->revealed);
+    reveal({0}, uint256{2}, 10);
+    BOOST_CHECK(!state.GetVote({ids[0], voter})->revealed);
+    reveal({1}, uint256{2}, 10);
+    BOOST_CHECK(state.GetVote({ids[0], voter})->revealed);
+    BOOST_CHECK_EQUAL(state.GetVote({ids[0], voter})->answer, 1);
+    BOOST_CHECK(!state.GetBallot({1, voter}));
+    // The next period weighs it.
+    state.BeginBlock(12, 0, params, payouts);
+    BOOST_CHECK(state.GetDecision(ids[0])->resolved);
+    BOOST_CHECK_EQUAL(state.GetDecision(ids[0])->outcome, ONE);
+    BOOST_CHECK(!state.GetDecision(ids[1])->resolved);
+}
+
+BOOST_AUTO_TEST_CASE(ballots_are_pruned)
+{
+    // A ballot never revealed leaves the state with its period.
+    Consensus::HivemindParams params;
+    params.period_blocks = 6;
+    const CKey key{TestKey(1)};
+    params.genesis_account = AccountOf(key);
+    TestMarkets markets;
+    hivemind::State& state{markets.state};
+    std::vector<CTxOut> payouts;
+    std::string reason;
+    state.BeginBlock(1, 0, params, payouts);
+    const CTransaction list{ActionTx(Listing(0, 1), params.listing_fee, 1)};
+    BOOST_REQUIRE(state.ApplyTx(list, 1, params, payouts, reason));
+    state.BeginBlock(6, 0, params, payouts);
+    hivemind::SealBallot ballot;
+    ballot.voter = AccountOf(key);
+    ballot.close_period = 1;
+    ballot.decisions = {hivemind::MakeId(list.GetHash(), 0)};
+    BOOST_REQUIRE(state.ApplyTx(SignedTx(ballot, 0, 2, key, params, 6), 6, params, payouts, reason));
+    BOOST_CHECK(state.GetBallot({1, AccountOf(key)}));
+    state.BeginBlock(12, 0, params, payouts);
+    BOOST_CHECK(!state.GetBallot({1, AccountOf(key)}));
+}
+
+BOOST_AUTO_TEST_CASE(signatures_name_the_chain)
+{
+    // From audit2_height a signed action names the chain and its kind: a signature made for another
+    // chain, or in the old form, is no signature.
+    const CKey key{TestKey(1)};
+    Consensus::HivemindParams a, b, old;
+    a.genesis_hash = uint256{1};
+    b.genesis_hash = uint256{2};
+    old.genesis_hash = uint256{1};
+    old.audit2_height = 100;
+    hivemind::TransferReputation t;
+    t.from = AccountOf(key);
+    t.to = Account{TestAccount(1)};
+    t.amount = 1;
+    std::string reason;
+    const CTransaction for_a{SignedTx(t, 0, 1, key, a, 5)};
+    BOOST_CHECK(hivemind::CheckTx(for_a, 5, a, reason));
+    BOOST_CHECK(!hivemind::CheckTx(for_a, 5, b, reason));
+    BOOST_CHECK_EQUAL(reason, "bad-hm-signature");
+    // The old form, good before the height and not from it.
+    const CTransaction old_form{SignedTx(t, 0, 1, key, old, 5)};
+    BOOST_CHECK(hivemind::CheckTx(old_form, 5, old, reason));
+    BOOST_CHECK(!hivemind::CheckTx(old_form, 100, old, reason));
+    BOOST_CHECK(!hivemind::CheckTx(old_form, 5, a, reason));
+    BOOST_CHECK(hivemind::ActionMessage(t, COutPoint{}, a, 5) != hivemind::ActionMessage(t, COutPoint{}, b, 5));
+}
+
+BOOST_AUTO_TEST_CASE(dust_goes_to_the_voters)
+{
+    // From audit2_height, the change of a purchase and the proceeds of a sale below MIN_PAYOUT go to the voters' pot.
+    const CKey key{TestKey(1)};
+    for (const bool audit2 : {true, false}) {
+        Consensus::HivemindParams params;
+        params.period_blocks = 6;
+        params.audit2_height = audit2 ? 0 : 1000000;
+        TestMarkets markets;
+        hivemind::State& state{markets.state};
+        std::vector<CTxOut> payouts;
+        std::string reason;
+        state.BeginBlock(1, 0, params, payouts);
+        const hivemind::Id market{ListAndOpen(state, params, 1, 2, 1, payouts)};
+        payouts.clear();
+        const Account holder{AccountOf(key)};
+        const CAmount price{*state.Quote(market, 1, ONE)};
+        CAmount pot{state.VoterPot()};
+        BOOST_REQUIRE(state.ApplyTx(ActionTx(Buy(market, holder, ONE), price + 500, 10), 1, params, payouts, reason));
+        BOOST_CHECK_EQUAL(state.PositionOf({market, holder, 1}), ONE);
+        BOOST_CHECK_EQUAL(payouts.size(), audit2 ? 0U : 1U);
+        BOOST_CHECK_EQUAL(state.VoterPot(), audit2 ? pot + 500 : pot);
+        // A sale of a sliver of a share.
+        payouts.clear();
+        pot = state.VoterPot();
+        hivemind::SellShares sell;
+        sell.market = market;
+        sell.account = holder;
+        sell.state = 1;
+        sell.shares = 500;
+        BOOST_REQUIRE(state.ApplyTx(SignedTx(sell, 0, 11, key, params, 1), 1, params, payouts, reason));
+        BOOST_CHECK_EQUAL(state.PositionOf({market, holder, 1}), ONE - 500);
+        BOOST_CHECK_EQUAL(payouts.size(), audit2 ? 0U : 1U);
+        if (audit2) BOOST_CHECK_GT(state.VoterPot(), pot);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(trade_fee_in_128_bits)
+{
+    BOOST_CHECK_EQUAL(hivemind::TradeFee(10001, 50), 51);
+    BOOST_CHECK_EQUAL(hivemind::TradeFee(MAX_MONEY, 1000), MAX_MONEY / 10);
+    // Beyond 64 bits in between, and beyond money at the end: it stays at MAX_MONEY.
+    BOOST_CHECK_EQUAL(hivemind::TradeFee(MAX_MONEY, 65535), MAX_MONEY);
+    BOOST_CHECK_EQUAL(hivemind::TradeFee(0, 65535), 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

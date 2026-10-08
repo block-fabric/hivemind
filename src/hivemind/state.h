@@ -79,8 +79,17 @@ inline constexpr uint32_t PRUNE_AFTER_PERIODS{30};
 inline constexpr int64_t QUORUM_PERCENT{20};
 /** Least amount a purchase of shares may pay: what cannot be bought is given back, and payouts are not free. */
 inline constexpr CAmount MIN_PURCHASE{10000};
-/** Settlement payouts below this go to the voters' pot (from audit_height): a payout costs every node. */
+/**
+ * Settlement payouts below this go to the voters' pot (from audit_height), and so do the proceeds of a
+ * sale and coins given back (from audit2_height): a payout costs every node.
+ */
 inline constexpr CAmount MIN_PAYOUT{1000};
+/**
+ * Least amount a purchase that opens a position pays (from audit2_height). Every position is a payout
+ * when its market settles; a position is open to anyone who names an account, so what bounds their
+ * number is the coins each has to hold until then.
+ */
+inline constexpr CAmount MIN_POSITION{100000};
 /** What is kept, for the voters, of coins given back for an action that could not be done. */
 inline constexpr CAmount REFUND_FEE{1000};
 /** Most actions in one transaction. */
@@ -189,7 +198,39 @@ struct RevealVote {
 /** The answer of a voter who says that the answer cannot be known yet. */
 inline constexpr int64_t ANSWER_UNKNOWN{std::numeric_limits<int64_t>::min()};
 
-using Action = std::variant<ListDecision, OpenMarket, BuyShares, SellShares, TransferReputation, SealVote, RevealVote>;
+/**
+ * Seal votes on several decisions at once (from audit2_height): one commitment, one signature, so that
+ * a voter's votes on all the decisions closing in a period take little room. Signed by the voter. The
+ * decisions are those whose vote closes in `close_period`; a later ballot of the voter for that
+ * period replaces this one, and a seal of a single vote replaces it for that decision.
+ */
+struct SealBallot {
+    static constexpr uint8_t KIND{8};
+    Account voter;
+    uint32_t close_period{0};
+    std::vector<Id> decisions;
+    //! BallotCommitment() of the answers.
+    uint256 commitment;
+    std::vector<unsigned char> signature;
+
+    SERIALIZE_METHODS(SealBallot, obj) { READWRITE(obj.voter, obj.close_period, obj.decisions, obj.commitment, obj.signature); }
+};
+
+/**
+ * Show the votes of a ballot: an answer for each of its decisions, in their order. The decisions are
+ * not repeated: the chain has them from the seal. Needs no signature, as RevealVote.
+ */
+struct RevealBallot {
+    static constexpr uint8_t KIND{9};
+    Account voter;
+    uint32_t close_period{0};
+    std::vector<int64_t> answers;
+    uint256 salt;
+
+    SERIALIZE_METHODS(RevealBallot, obj) { READWRITE(obj.voter, obj.close_period, obj.answers, obj.salt); }
+};
+
+using Action = std::variant<ListDecision, OpenMarket, BuyShares, SellShares, TransferReputation, SealVote, RevealVote, SealBallot, RevealBallot>;
 
 /** The script of the output that asks for `action`. */
 CScript ActionScript(const Action& action);
@@ -198,13 +239,16 @@ bool IsActionScript(const CScript& script);
 std::optional<Action> ParseActionScript(const CScript& script);
 
 /**
- * The message an account signs to authorise an action. It names the first
- * input of the transaction, which can be spent only once, so that the
- * signature is of no use in another transaction.
+ * The message an account signs to authorise an action in a block at `height`. It names the first
+ * input of the transaction, which can be spent only once, so that the signature is of no use in
+ * another transaction; and, from audit2_height, the chain (its genesis block) and the kind of action,
+ * so that it is of no use on another chain that shares an output with this one, or as another action.
  */
-std::string ActionMessage(const Action& action, const COutPoint& first_input);
+std::string ActionMessage(const Action& action, const COutPoint& first_input, const Consensus::HivemindParams& params, int height);
 /** What a sealed vote commits to. It names the voter, so that nobody can seal someone else's vote as their own. */
 uint256 VoteCommitment(const Id& decision, const Account& voter, int64_t answer, const uint256& salt);
+/** What a ballot commits to: the voter, the period, the decisions and an answer to each, in order. */
+uint256 BallotCommitment(const Account& voter, uint32_t close_period, const std::vector<Id>& decisions, const std::vector<int64_t>& answers, const uint256& salt);
 /** The identifier of the decision or market made by output `n` of transaction `txid`. */
 Id MakeId(const Txid& txid, uint32_t n);
 
@@ -262,6 +306,24 @@ struct VoteKey {
 
     SERIALIZE_METHODS(VoteKey, obj) { READWRITE(obj.decision, obj.voter); }
     friend auto operator<=>(const VoteKey&, const VoteKey&) = default;
+};
+
+/** A ballot is the voter's for the period its decisions close in: one at a time. */
+struct BallotKey {
+    uint32_t close_period{0};
+    Account voter;
+
+    SERIALIZE_METHODS(BallotKey, obj) { READWRITE(obj.close_period, obj.voter); }
+    friend auto operator<=>(const BallotKey&, const BallotKey&) = default;
+};
+
+struct Ballot {
+    //! As sealed: the commitment covers them all, though only those that were open to a seal got one.
+    std::vector<Id> decisions;
+    uint256 commitment;
+
+    SERIALIZE_METHODS(Ballot, obj) { READWRITE(obj.decisions, obj.commitment); }
+    friend bool operator==(const Ballot&, const Ballot&) = default;
 };
 
 struct Vote {
@@ -344,6 +406,22 @@ struct sidechain::KeyCodec<hivemind::VoteKey> {
     }
 };
 
+template <>
+struct sidechain::KeyCodec<hivemind::BallotKey> {
+    static void Encode(StoreBytes& out, const hivemind::BallotKey& v)
+    {
+        KeyCodec<uint32_t>::Encode(out, v.close_period);
+        KeyCodec<uint160>::Encode(out, v.voter);
+    }
+    static hivemind::BallotKey Decode(std::span<const unsigned char>& in)
+    {
+        hivemind::BallotKey v;
+        v.close_period = KeyCodec<uint32_t>::Decode(in);
+        v.voter = KeyCodec<uint160>::Decode(in);
+        return v;
+    }
+};
+
 namespace hivemind {
 
 /**
@@ -388,6 +466,7 @@ public:
     /** The shares an account holds of a state of a market (0 if none). */
     int64_t PositionOf(const PositionKey& key) const;
     std::optional<Vote> GetVote(const VoteKey& key) const;
+    std::optional<Ballot> GetBallot(const BallotKey& key) const;
     /** The reputation an account holds (0 if none). */
     int64_t ReputationOf(const Account& account) const;
     void ForEachDecision(const std::function<bool(const Id&, const Decision&)>& fn) const;
@@ -448,6 +527,7 @@ private:
     void SetVote(const VoteKey& key, const std::optional<Vote>& vote);
     void SetReputation(const Account& account, std::optional<int64_t> amount);
     void SetVoterPot(CAmount pot);
+    void SetBallot(const BallotKey& key, const std::optional<Ballot>& ballot);
 
     const sidechain::StoreView* m_view;
     sidechain::StoreOverlay* m_overlay;
@@ -455,9 +535,13 @@ private:
 
 /**
  * Whether the requests among the outputs of a transaction are well formed and,
- * where needed, signed. This depends on the transaction alone.
+ * where needed, signed, in a block at `height`. This depends on the transaction
+ * and the height alone.
  */
-[[nodiscard]] bool CheckTx(const CTransaction& tx, const Consensus::HivemindParams& params, std::string& reject_reason);
+[[nodiscard]] bool CheckTx(const CTransaction& tx, int height, const Consensus::HivemindParams& params, std::string& reject_reason);
+
+/** The trading fee on `amount` at `fee_bps` hundredths of a percent, rounded up; in 128 bits, so that no rate overflows. */
+CAmount TradeFee(CAmount amount, uint16_t fee_bps);
 
 /** The fraction of ONE that an answer to a decision stands for. */
 int64_t AnswerFraction(const ListDecision& decision, int64_t answer);
