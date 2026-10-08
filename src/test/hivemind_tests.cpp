@@ -796,6 +796,100 @@ BOOST_AUTO_TEST_CASE(settlement_flood_leaves_deposits_their_share)
     BOOST_CHECK_EQUAL(half + (paid2.size() - 200) + rest.size(), settled);
 }
 
+BOOST_AUTO_TEST_CASE(settlement_and_bounded_tx_payouts_share_the_blocks)
+{
+    // The template's shared queues (sidechain audit2_height) with the markets' routing of settlements
+    // and their bound on what a block's transactions pay (Hivemind audit2_height): a settlement waits
+    // in the queue of transactions, ahead of what later transactions give rise to; blocks whose
+    // transactions give rise to MAX_TX_PAYOUTS_PER_BLOCK payouts each, while deposits keep coming,
+    // still pay the settlement off and never let either queue grow.
+    Consensus::SidechainParams params;
+    params.audit2_height = 0;
+    params.hivemind.period_blocks = 6;
+    params.hivemind.max_rolls = 0;
+    params.hivemind.audit2_height = 0;
+    sidechain::EmptyStore empty;
+    sidechain::StoreOverlay store{empty, /*journal=*/true};
+    sidechain::State side{store};
+    hivemind::State markets{store};
+    sidechain::Mainchain mainchain;
+    sidechain::MainBlock genesis;
+    genesis.hash = uint256{1};
+    BOOST_REQUIRE(mainchain.Append(genesis));
+    sidechain::MainBlock next;
+    next.hash = uint256{2};
+    next.prev_hash = genesis.hash;
+    BOOST_REQUIRE(mainchain.Append(next));
+    std::vector<CTxOut> payouts;
+    std::string reason;
+    BOOST_REQUIRE_MESSAGE(side.ApplyMainEvents(1, mainchain, 1, params, payouts, reason), reason);
+    const hivemind::Id market{ListAndOpen(markets, params.hivemind, 1, 0, 1, payouts)};
+    const size_t holders{sidechain::MAX_PAYOUTS_PER_BLOCK};
+    for (size_t i{0}; i < holders; ++i) {
+        Account account;
+        account.begin()[0] = 0xe0;
+        account.begin()[1] = static_cast<uint8_t>(i & 0xff);
+        account.begin()[2] = static_cast<uint8_t>(i >> 8);
+        if (payouts.size() == hivemind::MAX_TX_PAYOUTS_PER_BLOCK) payouts.clear();
+        BOOST_REQUIRE_MESSAGE(markets.ApplyTx(ActionTx(Buy(market, account, ONE), 100 * COIN, static_cast<uint8_t>(i)), 1, params.hivemind, payouts, reason), reason);
+    }
+    BOOST_REQUIRE_MESSAGE(side.ApplyMainEvents(1, mainchain, 6, params, payouts, reason), reason);
+    BOOST_REQUIRE_MESSAGE(side.ApplyMainEvents(1, mainchain, 10, params, payouts, reason), reason);
+    payouts.clear();
+    BOOST_REQUIRE_MESSAGE(side.ApplyMainEvents(1, mainchain, 12, params, payouts, reason), reason);
+    BOOST_REQUIRE(markets.GetMarket(market)->settled);
+    // Routed to the queue of transactions, not paid by the block that settled it.
+    BOOST_CHECK(payouts.empty());
+    const std::vector<CTxOut> settlement{side.TxQueue()};
+    BOOST_REQUIRE_GE(settlement.size(), holders);
+
+    // A second market, whose purchases give rise to payouts (their change) in the blocks below.
+    payouts.clear();
+    const hivemind::Id other{ListAndOpen(markets, params.hivemind, 13, 50, 3, payouts)};
+    const Account buyer{TestAccount(7)};
+    BOOST_REQUIRE(markets.ApplyTx(ActionTx(Buy(other, buyer, ONE), COIN, 5), 13, params.hivemind, payouts, reason));
+
+    const size_t half{sidechain::MAX_PAYOUTS_PER_BLOCK / 2};
+    std::vector<CTxOut> settlement_paid;
+    size_t tx_queue_before{side.TxQueue().size()};
+    uint32_t salt{0};
+    for (int height{14}; height < 40; ++height) {
+        // The block's transactions: as many payouts as they may give rise to, and not one more.
+        std::vector<CTxOut> tx_payouts;
+        while (tx_payouts.size() < hivemind::MAX_TX_PAYOUTS_PER_BLOCK) {
+            ++salt;
+            BOOST_REQUIRE_MESSAGE(markets.ApplyTx(ActionTx(Buy(other, buyer, ONE / 1000), COIN + salt, static_cast<uint8_t>(salt)), height, params.hivemind, tx_payouts, reason), reason);
+        }
+        ++salt;
+        BOOST_CHECK(!markets.ApplyTx(ActionTx(Buy(other, buyer, ONE / 1000), COIN + salt, static_cast<uint8_t>(salt)), height, params.hivemind, tx_payouts, reason));
+        BOOST_CHECK_EQUAL(reason, "hm-block-payouts-full");
+        BOOST_CHECK_EQUAL(tx_payouts.size(), hivemind::MAX_TX_PAYOUTS_PER_BLOCK);
+        // And more than half a block of deposits.
+        std::vector<CTxOut> deposits;
+        for (size_t i{0}; i < half + 100; ++i) deposits.emplace_back(static_cast<CAmount>(COIN + i), CScript() << OP_TRUE);
+        const size_t deposits_before{side.Queue().size()};
+        const auto paid{side.TakePayouts(deposits, tx_payouts, /*shared=*/true)};
+        // A full block, unless both queues hold less.
+        BOOST_REQUIRE_EQUAL(paid.size(), std::min(sidechain::MAX_PAYOUTS_PER_BLOCK, deposits_before + deposits.size() + tx_queue_before + tx_payouts.size()));
+        // Deposits get at least their half.
+        BOOST_CHECK_LE(side.Queue().size(), deposits_before + deposits.size() - half);
+        // The queue of transactions gets its half, more than its transactions added: it shrinks.
+        const size_t tx_queue{side.TxQueue().size()};
+        const size_t tx_queued{tx_queue_before + hivemind::MAX_TX_PAYOUTS_PER_BLOCK};
+        BOOST_CHECK_EQUAL(tx_queue, tx_queued > half ? tx_queued - half : 0);
+        tx_queue_before = tx_queue;
+        for (const CTxOut& o : paid) {
+            if (settlement_paid.size() < settlement.size() && o == settlement[settlement_paid.size()]) settlement_paid.push_back(o);
+        }
+    }
+    // The settlement was paid whole, in order, before the payouts of the transactions that came after.
+    BOOST_CHECK_EQUAL(settlement_paid.size(), settlement.size());
+    // Once the settlement is paid, a block pays all its transactions gave rise to, and the deposits
+    // take the rest: both queues are empty in the end.
+    BOOST_CHECK(side.TxQueue().empty());
+    BOOST_CHECK(side.Queue().empty());
+}
+
 BOOST_AUTO_TEST_CASE(a_position_is_opened_with_min_position)
 {
     // From audit2_height, a purchase that opens a position pays at least MIN_POSITION: positions,

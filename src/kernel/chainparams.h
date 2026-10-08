@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <unordered_map>
 #include <vector>
 
@@ -164,6 +165,8 @@ public:
         std::optional<int64_t> hivemind_period_seconds{};
         //! If set, the height from which the markets have the rules of both audits, instead of 0.
         std::optional<int> hivemind_audit2_height{};
+        //! Drivechain parameters to set, by the name of their field in Consensus::DrivechainParams.
+        std::vector<std::pair<std::string, int>> drivechain_params{};
     };
 
     struct MainNetOptions {
