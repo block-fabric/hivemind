@@ -17,6 +17,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <chrono>
 
 #include <numeric>
@@ -705,7 +706,7 @@ BOOST_AUTO_TEST_CASE(settlement_paid_from_the_transaction_queue)
             BOOST_CHECK_GE(side.TxQueue().size(), 3U);
             // A deposit owed in the same block goes first.
             const CTxOut deposit{5 * COIN, CScript() << OP_TRUE};
-            const auto paid{side.TakePayouts({deposit}, {})};
+            const auto paid{side.TakePayouts({deposit}, {}, /*shared=*/true)};
             BOOST_REQUIRE_GE(paid.size(), 4U);
             BOOST_CHECK(paid.front() == deposit);
         } else {
@@ -713,6 +714,75 @@ BOOST_AUTO_TEST_CASE(settlement_paid_from_the_transaction_queue)
             BOOST_CHECK(side.TxQueue().empty());
         }
     }
+}
+
+BOOST_AUTO_TEST_CASE(settlement_flood_leaves_deposits_their_share)
+{
+    // A market of more positions than a block pays: its settlement waits in the queue of transactions,
+    // and the deposits owed meanwhile still get their half of every block, in order, until none is left.
+    Consensus::SidechainParams params;
+    params.audit2_height = 0;
+    params.hivemind.period_blocks = 6;
+    params.hivemind.max_rolls = 0;
+    params.hivemind.audit2_height = 0;
+    sidechain::EmptyStore empty;
+    sidechain::StoreOverlay store{empty, /*journal=*/true};
+    sidechain::State side{store};
+    hivemind::State markets{store};
+    sidechain::Mainchain mainchain;
+    sidechain::MainBlock genesis;
+    genesis.hash = uint256{1};
+    BOOST_REQUIRE(mainchain.Append(genesis));
+    sidechain::MainBlock next;
+    next.hash = uint256{2};
+    next.prev_hash = genesis.hash;
+    BOOST_REQUIRE(mainchain.Append(next));
+    std::vector<CTxOut> payouts;
+    std::string reason;
+    BOOST_REQUIRE_MESSAGE(side.ApplyMainEvents(1, mainchain, 1, params, payouts, reason), reason);
+    const hivemind::Id market{ListAndOpen(markets, params.hivemind, 1, 0, 1, payouts)};
+    const size_t holders{sidechain::MAX_PAYOUTS_PER_BLOCK + 300};
+    for (size_t i{0}; i < holders; ++i) {
+        Account account;
+        account.begin()[0] = 0xf0;
+        account.begin()[1] = static_cast<uint8_t>(i & 0xff);
+        account.begin()[2] = static_cast<uint8_t>(i >> 8);
+        BOOST_REQUIRE_MESSAGE(markets.ApplyTx(ActionTx(Buy(market, account, ONE), 100 * COIN, static_cast<uint8_t>(i)), 1, params.hivemind, payouts, reason), reason);
+    }
+    BOOST_REQUIRE_MESSAGE(side.ApplyMainEvents(1, mainchain, 6, params, payouts, reason), reason);
+    BOOST_REQUIRE_MESSAGE(side.ApplyMainEvents(1, mainchain, 10, params, payouts, reason), reason);
+    payouts.clear();
+    BOOST_REQUIRE_MESSAGE(side.ApplyMainEvents(1, mainchain, 12, params, payouts, reason), reason);
+    BOOST_REQUIRE(markets.GetMarket(market)->settled);
+    BOOST_CHECK(payouts.empty());
+    const size_t settled{side.TxQueue().size()};
+    BOOST_REQUIRE_GE(settled, holders);
+
+    // Deposits arrive while the settlement waits: more than half a block of them.
+    const size_t half{sidechain::MAX_PAYOUTS_PER_BLOCK / 2};
+    std::vector<CTxOut> deposits;
+    for (size_t i{0}; i < half + 200; ++i) deposits.emplace_back(static_cast<CAmount>(COIN + i), CScript() << OP_TRUE);
+    const auto is_deposit{[&](const CTxOut& o) { return o.nValue >= COIN && o.nValue < COIN + static_cast<CAmount>(deposits.size()) && o.scriptPubKey == (CScript() << OP_TRUE); }};
+
+    // First block: half for the deposits, half for the settlement.
+    const auto paid1{side.TakePayouts(deposits, {}, /*shared=*/true)};
+    BOOST_REQUIRE_EQUAL(paid1.size(), sidechain::MAX_PAYOUTS_PER_BLOCK);
+    for (size_t i{0}; i < half; ++i) BOOST_CHECK(paid1[i] == deposits[i]);
+    BOOST_CHECK_EQUAL(std::count_if(paid1.begin(), paid1.end(), is_deposit), static_cast<long>(half));
+    BOOST_CHECK_EQUAL(side.Queue().size(), deposits.size() - half);
+    BOOST_CHECK_EQUAL(side.TxQueue().size(), settled - half);
+
+    // Second block: the rest of the deposits, then the settlement takes what they leave.
+    const auto paid2{side.TakePayouts({}, {}, /*shared=*/true)};
+    BOOST_REQUIRE_EQUAL(paid2.size(), std::min(sidechain::MAX_PAYOUTS_PER_BLOCK, 200 + settled - half));
+    for (size_t i{0}; i < 200; ++i) BOOST_CHECK(paid2[i] == deposits[half + i]);
+    BOOST_CHECK(side.Queue().empty());
+    BOOST_CHECK_EQUAL(std::count_if(paid2.begin() + 200, paid2.end(), is_deposit), 0);
+
+    // The settlement is paid in full in the end, in order, each output once.
+    std::vector<CTxOut> rest{side.TxQueue()};
+    while (!side.TxQueue().empty()) BOOST_REQUIRE(!side.TakePayouts({}, {}, /*shared=*/true).empty());
+    BOOST_CHECK_EQUAL(half + (paid2.size() - 200) + rest.size(), settled);
 }
 
 BOOST_AUTO_TEST_CASE(a_position_is_opened_with_min_position)

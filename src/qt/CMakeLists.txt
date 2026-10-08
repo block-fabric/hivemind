@@ -123,6 +123,7 @@ add_library(bitcoinqt STATIC EXCLUDE_FROM_ALL
   chainactivity.h
   cryptotoolsdialog.cpp
   cryptotoolsdialog.h
+  itemviews.h
   marketsdialog.cpp
   marketsdialog.h
   miningdialog.cpp

@@ -6,6 +6,7 @@
 
 #include <qt/clientmodel.h>
 #include <qt/guiutil.h>
+#include <qt/itemviews.h>
 
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -67,7 +68,7 @@ QString ColumnsKey(const QTableWidget* table) { return QStringLiteral("Markets/c
  */
 QTableWidget* Table(const QStringList& headers, QWidget* parent, const char* name)
 {
-    auto* table{new QTableWidget(0, headers.size(), parent)};
+    auto* table{new ItemViews::Table(0, headers.size(), parent)};
     table->setObjectName(name);
     table->setHorizontalHeaderLabels(headers);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -617,7 +618,7 @@ QWidget* MarketsDialog::createCreateTab()
     auto* only_ticked{new QCheckBox(tr("Only ticked"), open)};
     about->addWidget(only_ticked);
     open_layout->addLayout(about);
-    m_market_decisions = new QListWidget(open);
+    m_market_decisions = new ItemViews::List(open);
     m_market_decisions->setObjectName("marketDecisions");
     m_market_decisions->setMinimumHeight(140);
     m_market_decisions->setWordWrap(true);
