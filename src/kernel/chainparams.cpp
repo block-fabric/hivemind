@@ -350,7 +350,7 @@ public:
         consensus.sidechain.hivemind.start_time = 1790900000;
         // The test network ran without the audit's rules until then; see HivemindParams.
         consensus.sidechain.hivemind.audit_height = 4200;
-        consensus.sidechain.hivemind.audit2_height = 999999999; // AUDIT2_TESTNET: set at deploy
+        consensus.sidechain.hivemind.audit2_height = 3625; // audit 2 rules on the test network, 300 blocks after the deploy
         consensus.sidechain.hivemind.genesis_hash = consensus.hashGenesisBlock;
         // A test network goes through the voting in hours, not days.
         consensus.sidechain.hivemind.period_seconds = 60 * 60;
@@ -359,7 +359,7 @@ public:
         consensus.sidechain.single_bundle_height = 4200;
         // The height of the mainchain block that activated the slot; nothing is left out at 0.
         consensus.sidechain.main_activation_height = 68;
-        consensus.sidechain.audit2_height = 999999999; // AUDIT2_TESTNET: set at deploy
+        consensus.sidechain.audit2_height = 3625; // audit 2 rules on the test network, 300 blocks after the deploy
         consensus.coinbase_maturity = 0; // what a block pays (deposits, fees) can be spent in the next
     }
 };
