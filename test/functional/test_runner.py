@@ -172,6 +172,7 @@ BASE_SCRIPTS = [
     'feature_sidechain_network.py',
     'feature_hivemind.py',
     'feature_hivemind_upgrade.py',
+    'feature_hivemind_miner.py',
     'feature_sidechain_follower.py',
     'rpc_setgenerate.py',
     'feature_reindex_readonly.py',
