@@ -29,6 +29,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QScrollArea>
+#include <QSet>
 #include <QSettings>
 #include <QHideEvent>
 #include <QShowEvent>
@@ -55,6 +56,8 @@ const char* const GREEN{"#10b981"};
 const char* const ORANGE{"#f59e0b"};
 const char* const BLUE{"#6495ed"};
 const char* const RED{"#ef4444"};
+//! The largest holders of reputation shown: the list is for a look, and all of it can be long.
+constexpr int SHOWN_HOLDERS{200};
 
 QString ColumnsKey(const QTableWidget* table) { return QStringLiteral("Markets/columns/%1").arg(table->objectName()); }
 
@@ -1788,26 +1791,35 @@ void MarketsDialog::refresh()
     }
 
     m_reputation_list.clear();
-    if (const auto reputation{call("listreputation", Args({}), false, true)}) {
+    // The largest holders, and the holdings of this wallet in one call: not a question to the
+    // wallet about every account there is, on every block.
+    if (const auto reputation{call("listreputation", Args({SHOWN_HOLDERS}), false, true)}) {
         const QString voter{m_voter->currentText()};
-        double total{0}, mine_total{0};
-        for (const UniValue& holder : reputation->getValues()) total += holder["amount"].get_real();
-        m_reputation->setRowCount(reputation->size());
+        const double total{(*info)["reputation"].get_real()};
+        double mine_total{0};
+        QSet<QString> mine;
         m_voter->clear();
+        if (m_wallet_name()) {
+            if (const auto own{call("getwalletreputation", Args({}), /*wallet=*/true, /*quiet=*/true)}) {
+                for (const UniValue& holder : own->getValues()) {
+                    const QString account{Text(holder["account"])};
+                    const double amount{holder["amount"].get_real()};
+                    mine.insert(account);
+                    m_reputation_list.insert(account, amount);
+                    m_voter->addItem(account);
+                    mine_total += amount;
+                }
+            }
+        }
+        m_reputation->setRowCount(reputation->size());
         for (size_t row{0}; row < reputation->size(); ++row) {
             const UniValue& holder{(*reputation)[row]};
             const QString account{Text(holder["account"])};
             const double amount{holder["amount"].get_real()};
-            const bool mine{isMine(account)};
-            m_reputation_list.insert(account, amount);
             m_reputation->setItem(row, 0, Item(account));
             m_reputation->setItem(row, 1, Item(Coins(amount)));
             m_reputation->setItem(row, 2, Item(total > 0 ? Percent(amount / total) : QString{}));
-            m_reputation->setItem(row, 3, Item(mine ? tr("yes") : QString{}));
-            if (mine) {
-                m_voter->addItem(account);
-                mine_total += amount;
-            }
+            m_reputation->setItem(row, 3, Item(mine.contains(account) ? tr("yes") : QString{}));
         }
         FitColumns(m_reputation);
         if (!voter.isEmpty()) m_voter->setCurrentIndex(std::max(0, m_voter->findText(voter)));
