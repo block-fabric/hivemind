@@ -255,6 +255,9 @@ public:
     virtual std::optional<std::pair<std::vector<uint256>, uint256>> getBallot(uint32_t close_period, const uint160& voter) = 0;
     //! Hivemind: every holding of reputation, by account.
     virtual std::map<uint160, int64_t> getReputation() = 0;
+    //! Hivemind: the last period the votes an account sealed close in, while it lasts: until then a
+    //! transfer does not empty the account's holding.
+    virtual std::optional<uint32_t> getReputationSealedUntil(const uint160& account) = 0;
 
     //! The parameters of the prediction markets of this chain.
     virtual Consensus::HivemindParams getHivemindParams() = 0;

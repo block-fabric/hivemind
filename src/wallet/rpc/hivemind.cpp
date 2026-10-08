@@ -435,7 +435,8 @@ RPCMethod transfervotecoin()
     return RPCMethod{
         "transfervotecoin",
         "Move reputation (votecoin) from an account of this wallet to another account.\n"
-        "Reputation does not move while votes are revealed (the last third of a period): a transfer mined then is ignored." +
+        "Reputation does not move while votes are revealed (the last third of a period): a transfer mined then is ignored.\n"
+        "An account that sealed votes keeps at least what seals a vote until the period they close in is over." +
         HELP_REQUIRING_PASSPHRASE,
         {
             {"from", RPCArg::Type::STR, RPCArg::Optional::NO, "The address of this wallet that holds the reputation"},
@@ -465,6 +466,13 @@ RPCMethod transfervotecoin()
     const int64_t left{held(transfer.from) - transfer.amount};
     if ((left > 0 && left < least) || (left != 0 && held(transfer.to) + transfer.amount < least)) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("A transfer leaves each account with no reputation or with at least %s; a whole holding moves wherever it goes", FormatMoney(least)));
+    }
+    // A holding that sealed votes is not emptied until the period they close in is over.
+    if (left <= 0) {
+        if (const auto sealed{pwallet->chain().getReputationSealedUntil(transfer.from)}) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("The account sealed votes that close in period %u: until that period is over, a transfer "
+                                                                "leaves it at least %s", *sealed, FormatMoney(least)));
+        }
     }
     const auto [tx, index]{SendAction(*pwallet, transfer, 0, transfer.from)};
     UniValue result(UniValue::VOBJ);

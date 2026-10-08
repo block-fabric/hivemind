@@ -1507,6 +1507,79 @@ BOOST_AUTO_TEST_CASE(whole_exits_cannot_be_kept_out)
     }
 }
 
+BOOST_AUTO_TEST_CASE(one_stake_seals_for_one_account)
+{
+    // From audit2_height a holding that sealed votes is not emptied until the period they close in is
+    // over: moved on from account to account, one stake would otherwise seal the votes of every one.
+    const CKey a{TestKey(1)}, b{TestKey(2)};
+    for (const bool audit2 : {true, false}) {
+        Consensus::HivemindParams params;
+        params.period_blocks = 6;
+        params.genesis_account = AccountOf(a);
+        params.audit2_height = audit2 ? 0 : 1000000;
+        TestMarkets markets;
+        hivemind::State& state{markets.state};
+        std::vector<CTxOut> payouts;
+        std::string reason;
+        state.BeginBlock(1, 0, params, payouts);
+        const CTransaction list{ActionTx(Listing(0, 1), params.listing_fee, 1)};
+        BOOST_REQUIRE(state.ApplyTx(list, 1, params, payouts, reason));
+        const hivemind::Id id{hivemind::MakeId(list.GetHash(), 0)};
+        // Votes on it close in period 1.
+        state.BeginBlock(6, 0, params, payouts);
+        uint8_t salt{10};
+        const auto transfer{[&](const CKey& from, const Account& to, int64_t amount, int height) {
+            hivemind::TransferReputation t;
+            t.from = AccountOf(from);
+            t.to = to;
+            t.amount = amount;
+            BOOST_REQUIRE(state.ApplyTx(SignedTx(t, 0, ++salt, from, params, height), height, params, payouts, reason));
+        }};
+        hivemind::SealVote seal;
+        seal.voter = AccountOf(a);
+        seal.decision = id;
+        seal.commitment = uint256{1};
+        BOOST_REQUIRE(state.ApplyTx(SignedTx(seal, 0, ++salt, a, params, 6), 6, params, payouts, reason));
+        BOOST_REQUIRE(state.GetVote({id, AccountOf(a)}));
+        BOOST_CHECK_EQUAL(state.SealedUntil(AccountOf(a)).has_value(), audit2);
+        // Not emptied; but what leaves it a voter's own moves.
+        const int64_t all{params.reputation_supply};
+        transfer(a, AccountOf(b), all, 6);
+        BOOST_CHECK_EQUAL(state.ReputationOf(AccountOf(a)), audit2 ? all : 0);
+        if (!audit2) continue;
+        transfer(a, AccountOf(b), all / 2, 6);
+        BOOST_CHECK_EQUAL(state.ReputationOf(AccountOf(b)), all / 2);
+        // A ballot holds its holding as well.
+        hivemind::SealBallot ballot;
+        ballot.voter = AccountOf(b);
+        ballot.close_period = 1;
+        ballot.decisions = {id};
+        ballot.commitment = uint256{2};
+        BOOST_REQUIRE(state.ApplyTx(SignedTx(ballot, 0, ++salt, b, params, 6), 6, params, payouts, reason));
+        BOOST_REQUIRE(state.GetVote({id, AccountOf(b)}));
+        transfer(b, TestAccount(3), all / 2, 7);
+        BOOST_CHECK_EQUAL(state.ReputationOf(AccountOf(b)), all / 2);
+
+        // A stall moves the decision: its seals stand, and so do the holdings until then.
+        state.BeginBlock(4 * 6, 0, params, payouts);
+        BOOST_REQUIRE_EQUAL(state.GetDecision(id)->close_period, 4U);
+        BOOST_REQUIRE(state.GetVote({id, AccountOf(a)}));
+        BOOST_CHECK_EQUAL(*state.SealedUntil(AccountOf(a)), 4U);
+        transfer(a, TestAccount(3), all / 2, 4 * 6);
+        BOOST_CHECK_EQUAL(state.ReputationOf(AccountOf(a)), all / 2);
+
+        // Once the period is over (its reveal phase had a block), the holdings move as they like.
+        state.BeginBlock(4 * 6 + 4, 0, params, payouts);
+        BOOST_REQUIRE(state.RevealPhase());
+        state.BeginBlock(5 * 6, 0, params, payouts);
+        BOOST_REQUIRE(!state.GetVote({id, AccountOf(a)}));
+        BOOST_CHECK(!state.SealedUntil(AccountOf(a)));
+        BOOST_CHECK(!state.SealedUntil(AccountOf(b)));
+        transfer(a, TestAccount(3), all / 2, 5 * 6);
+        BOOST_CHECK_EQUAL(state.ReputationOf(AccountOf(a)), 0);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(ballots_need_reputation_whatever_audit_height)
 {
     // Ballots are of audit2_height's rules: a ballot is sealed only by an account with the reputation of

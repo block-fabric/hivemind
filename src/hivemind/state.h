@@ -499,6 +499,12 @@ public:
     std::optional<Ballot> GetBallot(const BallotKey& key) const;
     /** The reputation an account holds (0 if none). */
     int64_t ReputationOf(const Account& account) const;
+    /**
+     * The last period whose votes the account sealed votes for (from audit2_height), if that period
+     * is not over: until it is, the account's holding is not emptied by a transfer, so that one stake
+     * seals the votes of one account at a time, not of every account it is moved through.
+     */
+    std::optional<uint32_t> SealedUntil(const Account& account) const;
     void ForEachDecision(const std::function<bool(const Id&, const Decision&)>& fn) const;
     void ForEachMarket(const std::function<bool(const Id&, const Market&)>& fn) const;
     void ForEachPosition(const std::function<bool(const PositionKey&, int64_t)>& fn) const;
@@ -576,6 +582,8 @@ private:
     void SetReputation(const Account& account, std::optional<int64_t> amount);
     void SetVoterPot(CAmount pot);
     void SetBallot(const BallotKey& key, const std::optional<Ballot>& ballot);
+    /** Note that the account sealed votes that close in `close_period`. */
+    void SealFor(const Account& account, uint32_t close_period);
 
     const sidechain::StoreView* m_view;
     sidechain::StoreOverlay* m_overlay;

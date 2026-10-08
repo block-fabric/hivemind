@@ -229,6 +229,9 @@ class HivemindTest(SidechainTest):
         votes = side.getdecision(rain["id"])["votes"]
         assert_equal(sorted(v["voter"] for v in votes), sorted([alice, bob, carol]))
         assert all(not v["revealed"] and "answer" not in v for v in votes)
+        # A holding that sealed votes is not emptied until they are revealed: moved on, it would seal
+        # the votes of another account too.
+        assert_raises_rpc_error(-8, "The account sealed votes that close in period", side.transfervotecoin, alice, side.getnewaddress(address_type="bech32"), 40)
         # It is too early to reveal: the wallet will not make public a vote that would not count.
         assert_raises_rpc_error(-1, "Votes on this decision are revealed in the reveal phase of its last period", other.revealvote, carol, rain["id"], "no")
         assert all(not v["revealed"] for v in side.getdecision(rain["id"])["votes"])

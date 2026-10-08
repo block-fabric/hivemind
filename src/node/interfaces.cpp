@@ -742,6 +742,11 @@ public:
         LOCK(::cs_main);
         return chainman().ActiveChainstate().SideState().Hivemind().Reputation();
     }
+    std::optional<uint32_t> getReputationSealedUntil(const uint160& account) override
+    {
+        LOCK(::cs_main);
+        return chainman().ActiveChainstate().SideState().Hivemind().SealedUntil(account);
+    }
     std::optional<uint8_t> getDecisionRolls(const uint256& decision) override
     {
         LOCK(::cs_main);

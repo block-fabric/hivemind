@@ -236,6 +236,18 @@ could never be mined.
 - **Reputation does not move while votes are revealed** (the last third of a
   period): a transfer mined then is ignored. Otherwise a holder could put the
   reputation behind whichever revealed vote turned out best.
+- **One stake seals the votes of one account at a time** (from
+  `audit2_height`). A seal (or ballot) needs a voter's own holding, and costs
+  every node a row; but a holding moved on, in the same block, to another
+  account that seals and moves it on again would seal the votes of any number
+  of accounts. So an account that sealed votes is not emptied by a transfer
+  until the period they close in is over (`SealedUntil`): what moves out of it
+  leaves it at least a voter's own, as transfers always do. The accounts with
+  seals standing then each hold a voter's own, at most about `MAX_VOTERS`. A
+  decision moved by a stall keeps its seals, and the holdings that made them
+  stay until its new period is over. Dropping the seals of an account a
+  transfer empties was considered: it needs an index of the votes by voter,
+  and gives the same bound.
 - **The phase never goes back** within a period: once a block is in the reveal
   phase, a mainchain time that steps back does not reopen sealing.
 - **Only decisions that get an answer count.** Skipping a decision that is

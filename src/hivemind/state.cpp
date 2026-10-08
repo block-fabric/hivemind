@@ -312,6 +312,8 @@ const sidechain::Cell<uint32_t> PERIOD{0x46, 0};
 const sidechain::Cell<bool> REVEAL{0x47, false};
 const sidechain::Cell<CAmount> VOTER_POT{0x48, 0};
 const sidechain::Table<BallotKey, Ballot> BALLOTS{0x4e};
+//! The last period that votes an account sealed close in (from audit2_height), until it is over.
+const sidechain::Table<uint160, uint32_t> SEALED{0x4f};
 constexpr uint8_t OPEN_BY_CLOSE{0x49};
 constexpr uint8_t RESOLVED_BY_CLOSE{0x4a};
 constexpr uint8_t MARKETS_BY_DECISION{0x4b};
@@ -363,6 +365,16 @@ std::optional<Vote> State::GetVote(const VoteKey& key) const { return VOTES.Get(
 std::optional<Ballot> State::GetBallot(const BallotKey& key) const { return BALLOTS.Get(*m_view, key); }
 int64_t State::ReputationOf(const Account& account) const { return REPUTATION.Get(*m_view, account).value_or(0); }
 uint32_t State::Period() const { return PERIOD.Get(*m_view); }
+std::optional<uint32_t> State::SealedUntil(const Account& account) const
+{
+    const auto until{SEALED.Get(*m_view, account)};
+    if (!until || *until < Period()) return std::nullopt;
+    return until;
+}
+void State::SealFor(const Account& account, uint32_t close_period)
+{
+    if (const auto until{SEALED.Get(*m_view, account)}; !until || *until < close_period) SEALED.Put(Writable(), account, close_period);
+}
 bool State::RevealPhase() const { return REVEAL.Get(*m_view); }
 CAmount State::VoterPot() const { return VOTER_POT.Get(*m_view); }
 std::map<Id, Decision> State::Decisions() const
@@ -785,6 +797,12 @@ bool State::ApplyTxSteps(const CTransaction& tx, int height, const Consensus::Hi
                 const int64_t least{params.reputation_supply / MAX_VOTERS};
                 if (*from - amount != 0 && *from - amount < least) amount = *from;
                 if (*from - amount != 0 && ReputationOf(transfer->to) + amount < least) continue;
+                // A holding that sealed votes is not emptied until they are revealed (the period they
+                // close in is over): a seal costs every node a row, and the holding of a voter is what
+                // bounds how many there are. Emptied into another account, which seals again, and so
+                // on, one stake would seal the votes of any number of accounts in one block. What is
+                // moved out of it leaves it a voter's own, as a transfer always does.
+                if (*from - amount == 0 && SealedUntil(transfer->from)) continue;
             }
             const int64_t left{*from - amount};
             const int64_t to{ReputationOf(transfer->to) + amount};
@@ -803,6 +821,7 @@ bool State::ApplyTxSteps(const CTransaction& tx, int height, const Consensus::Hi
                 if (!held || *held < params.reputation_supply / MAX_VOTERS) continue;
             }
             SetVote(VoteKey{seal->decision, seal->voter}, Vote{seal->commitment, false, 0});
+            if (audit2) SealFor(seal->voter, decision.close_period);
         } else if (const auto* reveal{std::get_if<RevealVote>(&*action)}) {
             const auto found{GetDecision(reveal->decision)};
             const VoteKey key{reveal->decision, reveal->voter};
@@ -844,6 +863,7 @@ bool State::ApplyTxSteps(const CTransaction& tx, int height, const Consensus::Hi
                 if (sealable(id)) SetVote(VoteKey{id, ballot->voter}, Vote{ballot->commitment, false, 0});
             }
             SetBallot(ballot_key, Ballot{ballot->decisions, ballot->commitment});
+            if (audit2) SealFor(ballot->voter, ballot->close_period);
         } else if (const auto* reveal{std::get_if<RevealBallot>(&*action)}) {
             const BallotKey ballot_key{reveal->close_period, reveal->voter};
             const auto found{GetBallot(ballot_key)};
@@ -1127,6 +1147,15 @@ void State::BeginBlock(int height, int64_t main_time, const Consensus::HivemindP
             while (ClosingIn(close_period) >= MAX_DECISIONS_PER_PERIOD) ++close_period;
             decision.close_period = close_period;
             SetDecision(id, decision);
+            // Its seals stand, and are revealed then: the holdings that sealed them stay until then.
+            if (height >= params.audit2_height) {
+                std::vector<Account> voters;
+                ForEachVoteOn(id, [&](const VoteKey& key, const Vote&) {
+                    voters.push_back(key.voter);
+                    return true;
+                });
+                for (const Account& voter : voters) SealFor(voter, close_period);
+            }
         }
         std::map<Account, CAmount> paid;
         // Periods the chain skipped are resolved one after the other, each on its own decisions: those
@@ -1150,6 +1179,13 @@ void State::BeginBlock(int height, int64_t main_time, const Consensus::HivemindP
             return true;
         });
         for (const BallotKey& key : done) SetBallot(key, std::nullopt);
+        // Seals of periods that are over hold no holding any more.
+        std::vector<Account> unsealed;
+        SEALED.ForEach(*m_view, [&](const Account& account, const uint32_t& until) {
+            if (until < clock.period) unsealed.push_back(account);
+            return true;
+        });
+        for (const Account& account : unsealed) SEALED.Erase(out, account);
         for (const auto& [account, amount] : paid) {
             // Dust goes to the voters: a payout costs every node, and a settlement could make many.
             if (height >= params.audit_height && amount < MIN_PAYOUT) {
