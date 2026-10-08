@@ -199,7 +199,9 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock()
         main_pending = side->MainPending(mainchain, nHeight, side_params);
         std::vector<COutPoint> bundled;
         const auto bundle{side->NextBundle(nHeight, pindexPrev->GetBlockHash(), side_params, &bundled, main_pending)};
-        // Not a bundle the mainchain has closed already: the block would be invalid.
+        // Not a bundle the mainchain has closed already: the block would be invalid. One proposed ahead
+        // and still pending is fine, as in State::ConnectBlock (all closes on record are before the
+        // next mainchain block, which commits to this one).
         if (bundle && !mainchain.ClosedHeight(bundle->GetHash().ToUint256())) {
             // A bundle takes its withdrawals out of reach of refunds. Someone who just made a
             // withdrawal can still take it back: while every withdrawal of the bundle is recent, the
@@ -323,6 +325,7 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock()
         // As many of the payouts owed as a block may pay; the rest wait for the next block.
         side_outputs = side->TakePayouts(std::move(side_outputs), std::move(side_tx_outputs), nHeight >= side_params.audit2_height);
         if (bundle_hash) side_outputs.emplace_back(0, sidechain::BundleCommitScript(*bundle_hash));
+        m_chainstate.ReleaseSideCursor();
     }
 
     const auto time_1{SteadyClock::now()};
