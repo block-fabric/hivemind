@@ -960,15 +960,11 @@ BOOST_AUTO_TEST_CASE(reputation_held_whole)
         BOOST_CHECK_EQUAL(state.ReputationOf(a), audit2 ? 0 : least - 1);
         transfer(b, least);
         BOOST_CHECK_EQUAL(state.ReputationOf(b), least);
-        // To leave a little behind is refused; to leave nothing is not.
+        // To leave a little behind moves it all; to leave nothing does too.
         const int64_t all{state.ReputationOf(AccountOf(key))};
         transfer(b, all - 1);
-        BOOST_CHECK_EQUAL(state.ReputationOf(b), audit2 ? least : least + all - 1);
-        if (audit2) {
-            transfer(b, all);
-            BOOST_CHECK_EQUAL(state.ReputationOf(AccountOf(key)), 0);
-            BOOST_CHECK_EQUAL(state.ReputationOf(b), least + all);
-        }
+        BOOST_CHECK_EQUAL(state.ReputationOf(b), audit2 ? least + all : least + all - 1);
+        BOOST_CHECK_EQUAL(state.ReputationOf(AccountOf(key)), audit2 ? 0 : 1);
     }
 }
 
@@ -1373,6 +1369,7 @@ BOOST_AUTO_TEST_CASE(a_sale_leaves_a_position_or_none)
 {
     // From audit2_height a sale leaves no shares, or shares worth MIN_POSITION: otherwise a purchase and
     // a sale of nearly all of it would make a position, which is a payout at settlement, for next to nothing.
+    // One that would leave less sells the whole position.
     const CKey key{TestKey(1)}, other{TestKey(2)};
     for (const bool audit2 : {true, false}) {
         Consensus::HivemindParams params;
@@ -1395,8 +1392,10 @@ BOOST_AUTO_TEST_CASE(a_sale_leaves_a_position_or_none)
         BOOST_CHECK_EQUAL(state.WhyNoSale(position, ONE - 1, 1, params).empty(), !audit2);
         BOOST_CHECK(state.WhyNoSale(position, ONE + 1, 1, params).find("does not hold") != std::string::npos);
         BOOST_REQUIRE(state.ApplyTx(SignedTx(sell, 0, 11, key, params, 1), 1, params, payouts, reason));
-        BOOST_CHECK_EQUAL(state.PositionOf(position), audit2 ? ONE : 1);
+        BOOST_CHECK_EQUAL(state.PositionOf(position), audit2 ? 0 : 1);
         if (!audit2) continue;
+        BOOST_REQUIRE(state.ApplyTx(ActionTx(Buy(market, holder, ONE), 2 * COIN, 17), 1, params, payouts, reason));
+        BOOST_REQUIRE_EQUAL(state.PositionOf(position), ONE);
         // Half a share, at a price near one, is worth about half a coin: it can be kept. And the rest sold.
         sell.shares = ONE / 2;
         BOOST_CHECK(state.WhyNoSale(position, ONE / 2, 1, params).empty());
@@ -1406,7 +1405,8 @@ BOOST_AUTO_TEST_CASE(a_sale_leaves_a_position_or_none)
         BOOST_REQUIRE(state.ApplyTx(SignedTx(sell, 0, 13, key, params, 1), 1, params, payouts, reason));
         BOOST_CHECK_EQUAL(state.PositionOf(position), 0);
 
-        // A purchase and a sale of all but a unit, in one transaction: the purchase is made, the sale not.
+        // A purchase and a sale of all but a unit, in one transaction: the purchase is made, and the sale
+        // sells all of it.
         const Account fresh{AccountOf(other)};
         CMutableTransaction tx;
         tx.vin.resize(1);
@@ -1417,7 +1417,7 @@ BOOST_AUTO_TEST_CASE(a_sale_leaves_a_position_or_none)
         tx.vout.emplace_back(0, hivemind::ActionScript(sell));
         SignOutput(tx, 1, other, params, 1);
         BOOST_REQUIRE(state.ApplyTx(CTransaction{tx}, 1, params, payouts, reason));
-        BOOST_CHECK_EQUAL(state.PositionOf({market, fresh, 1}), ONE);
+        BOOST_CHECK_EQUAL(state.PositionOf({market, fresh, 1}), 0);
 
         // What is left holds MinPositionShares() as well: at a price near one, fewer shares can be worth
         // MIN_POSITION, and would pay less at even odds.
@@ -1428,8 +1428,82 @@ BOOST_AUTO_TEST_CASE(a_sale_leaves_a_position_or_none)
         BOOST_REQUIRE_EQUAL(state.PositionOf(position), ONE);
         BOOST_CHECK(-*state.Quote(market, 1, -keep) > hivemind::MIN_POSITION);
         BOOST_CHECK(state.WhyNoSale(position, ONE - keep, 1, params).find("at least 0.002 shares") != std::string::npos);
+        // min_proceeds is of what was asked for: the whole position brings more, and is sold.
+        sell.min_proceeds = -*state.Quote(market, 1, -(ONE - keep)) - hivemind::PAYOUT_FEE;
+        payouts.clear();
         BOOST_REQUIRE(state.ApplyTx(SignedTx(sell, 0, 16, key, params, 1), 1, params, payouts, reason));
-        BOOST_CHECK_EQUAL(state.PositionOf(position), ONE);
+        BOOST_CHECK_EQUAL(state.PositionOf(position), 0);
+        BOOST_REQUIRE_EQUAL(payouts.size(), 1U);
+        BOOST_CHECK(payouts[0].nValue > sell.min_proceeds);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(whole_exits_cannot_be_kept_out)
+{
+    // From audit2_height a sale or a transfer that would leave less than its least moves the whole
+    // holding, rather than nothing: the price, or a holding of reputation, can change between the
+    // signing and the block, and anyone who trades first could otherwise keep a holder from leaving.
+    const CKey key{TestKey(1)}, seller{TestKey(2)}, dust{TestKey(3)};
+    for (const bool audit2 : {true, false}) {
+        Consensus::HivemindParams params;
+        params.period_blocks = 6;
+        params.genesis_account = AccountOf(key);
+        // A holding below a voter's own is made before the height, as it could be then.
+        params.audit2_height = audit2 ? 6 : 1000000;
+        const int64_t least{params.reputation_supply / hivemind::MAX_VOTERS};
+        TestMarkets markets;
+        hivemind::State& state{markets.state};
+        std::vector<CTxOut> payouts;
+        std::string reason;
+        state.BeginBlock(1, 0, params, payouts);
+        uint8_t salt{0};
+        const auto transfer{[&](const CKey& from, const Account& to, int64_t amount, int height) {
+            hivemind::TransferReputation t;
+            t.from = AccountOf(from);
+            t.to = to;
+            t.amount = amount;
+            BOOST_REQUIRE(state.ApplyTx(SignedTx(t, 0, ++salt, from, params, height), height, params, payouts, reason));
+        }};
+        transfer(key, AccountOf(dust), least - 1, 1);
+        // A market whose prices move a little with every share.
+        params.min_liquidity = 10 * COIN;
+        const hivemind::Id market{ListAndOpen(state, params, 1, 2, 100, payouts)};
+        const hivemind::PositionKey position{market, AccountOf(seller), 1};
+        BOOST_REQUIRE(state.ApplyTx(ActionTx(Buy(market, AccountOf(seller), ONE), 2 * COIN, 102), 1, params, payouts, reason));
+        state.BeginBlock(6, 0, params, payouts);
+
+        // A sale meant to keep a little, which is worth enough as it is signed.
+        const int64_t keep{hivemind::MinPositionShares(2) + 10000};
+        hivemind::SellShares sell;
+        sell.market = market;
+        sell.account = AccountOf(seller);
+        sell.state = 1;
+        sell.shares = ONE - keep;
+        BOOST_REQUIRE(state.WhyNoSale(position, sell.shares, 6, params).empty());
+        // Someone buys the other state first: what would be kept is worth less than MIN_POSITION.
+        hivemind::BuyShares other_side{Buy(market, TestAccount(5), ONE)};
+        other_side.state = 0;
+        BOOST_REQUIRE(state.ApplyTx(ActionTx(other_side, 2 * COIN, 103), 6, params, payouts, reason));
+        BOOST_REQUIRE_EQUAL(state.PositionOf({market, TestAccount(5), 0}), ONE);
+        BOOST_REQUIRE_EQUAL(state.WhyNoSale(position, sell.shares, 6, params).empty(), !audit2);
+        BOOST_REQUIRE(state.ApplyTx(SignedTx(sell, 0, ++salt, seller, params, 6), 6, params, payouts, reason));
+        BOOST_CHECK_EQUAL(state.PositionOf(position), audit2 ? 0 : keep);
+
+        // A holding below a voter's own moves whole into an account that holds nothing.
+        const Account empty{TestAccount(6)};
+        transfer(dust, empty, least - 1, 7);
+        BOOST_CHECK_EQUAL(state.ReputationOf(empty), least - 1);
+        BOOST_CHECK_EQUAL(state.ReputationOf(AccountOf(dust)), 0);
+        // But a part of a holding makes no holding that small.
+        transfer(key, TestAccount(7), least - 1, 7);
+        BOOST_CHECK_EQUAL(state.ReputationOf(TestAccount(7)), audit2 ? 0 : least - 1);
+        // A transfer that would leave less than that behind moves the whole holding.
+        const int64_t all{state.ReputationOf(AccountOf(key))};
+        transfer(key, empty, all - 1, 7);
+        BOOST_CHECK_EQUAL(state.ReputationOf(AccountOf(key)), audit2 ? 0 : 1);
+        int64_t total{0};
+        for (const auto& [account, amount] : state.Reputation()) total += amount;
+        BOOST_CHECK_EQUAL(total, params.reputation_supply);
     }
 }
 

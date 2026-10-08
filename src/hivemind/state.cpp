@@ -733,8 +733,25 @@ bool State::ApplyTxSteps(const CTransaction& tx, int height, const Consensus::Hi
             const auto position{POSITIONS.Get(*m_view, key)};
             if (!found || !TradingOpen(*found) || !position || *position < sell->shares) continue;
             Market market{*found};
+            // What is left of the position is worth MIN_POSITION, and holds MinPositionShares(), or
+            // there is none left (from audit2_height): otherwise a purchase and a sale of nearly all of
+            // it, in one transaction, would make a position, which is a payout at settlement, for next
+            // to nothing. A sale that would leave less sells the whole position: the price can move
+            // between the signing and the block, and a sale refused for it would let anyone who trades
+            // first keep a holder from leaving. min_proceeds still bounds what is paid.
+            int64_t shares{sell->shares};
+            if (audit2 && shares < *position) {
+                const int64_t keep{*position - shares};
+                std::vector<int64_t> kept{market.shares}, without;
+                kept[sell->state] -= shares;
+                without = kept;
+                without[sell->state] -= keep;
+                if (keep < MinPositionShares(kept.size()) || without[sell->state] < 0 ||
+                    -LmsrTradeCost(kept, without, market.opening.liquidity) < MIN_POSITION) shares = *position;
+            }
             std::vector<int64_t> after{market.shares};
-            after[sell->state] -= sell->shares;
+            after[sell->state] -= shares;
+            if (after[sell->state] < 0) continue;
             const CAmount proceeds{-LmsrTradeCost(market.shares, after, market.opening.liquidity)};
             // Never more than the treasury, which is money: the fee cannot overflow.
             if (proceeds <= 0 || proceeds > market.treasury) continue;
@@ -743,22 +760,11 @@ bool State::ApplyTxSteps(const CTransaction& tx, int height, const Consensus::Hi
             // brings less than that pays nothing out, and can still close a position).
             if (std::max<CAmount>(0, proceeds - fee - (audit2 ? PAYOUT_FEE : 0)) < sell->min_proceeds || proceeds - fee < 0 ||
                 market.treasury - proceeds < *std::max_element(after.begin(), after.end())) continue;
-            // What is left of the position is worth MIN_POSITION, and holds MinPositionShares(), or
-            // there is none left (from audit2_height): otherwise a purchase and a sale of nearly all of
-            // it, in one transaction, would make a position, which is a payout at settlement, for next
-            // to nothing.
-            const int64_t left{*position - sell->shares};
-            if (audit2 && left > 0) {
-                std::vector<int64_t> without{after};
-                without[sell->state] -= left;
-                if (left < MinPositionShares(after.size()) || without[sell->state] < 0 ||
-                    -LmsrTradeCost(after, without, market.opening.liquidity) < MIN_POSITION) continue;
-            }
             market.shares = std::move(after);
             market.treasury -= proceeds;
             market.fees += fee;
             SetMarket(sell->market, market);
-            SetPosition(key, left);
+            SetPosition(key, *position - shares);
             pay_out(sell->account, proceeds - fee);
         } else if (const auto* transfer{std::get_if<TransferReputation>(&*action)}) {
             // Reputation does not move while votes are revealed: it would let a holder put it
@@ -767,15 +773,21 @@ bool State::ApplyTxSteps(const CTransaction& tx, int height, const Consensus::Hi
             if (reveal_phase) continue;
             const auto from{REPUTATION.Get(*m_view, transfer->from)};
             if (!from || *from < transfer->amount) continue;
-            const int64_t left{*from - transfer->amount};
-            const int64_t to{ReputationOf(transfer->to) + transfer->amount};
+            int64_t amount{transfer->amount};
             // Every resolution reads and may rewrite every holding: from audit2_height none is made
             // smaller than a voter of its own (reputation_supply / MAX_VOTERS), so that there are at
-            // most about MAX_VOTERS of them, rather than as many as the supply has units.
+            // most about MAX_VOTERS of them, rather than as many as the supply has units. A transfer
+            // that would leave less than that behind moves the whole holding (a resolution can change
+            // the holding between the signing and the block: refused, the transfer could be kept from
+            // ever emptying it); and a whole holding moves wherever it goes, even below that size, as
+            // it adds no holding: one that a resolution left below it is moved into another so.
             if (audit2) {
                 const int64_t least{params.reputation_supply / MAX_VOTERS};
-                if ((left != 0 && left < least) || to < least) continue;
+                if (*from - amount != 0 && *from - amount < least) amount = *from;
+                if (*from - amount != 0 && ReputationOf(transfer->to) + amount < least) continue;
             }
+            const int64_t left{*from - amount};
+            const int64_t to{ReputationOf(transfer->to) + amount};
             SetReputation(transfer->from, left == 0 ? std::nullopt : std::optional{left});
             SetReputation(transfer->to, to);
         } else if (const auto* seal{std::get_if<SealVote>(&*action)}) {

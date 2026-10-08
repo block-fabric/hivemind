@@ -453,15 +453,18 @@ RPCMethod transfervotecoin()
     transfer.to = ParseAccount(request.params[1]);
     transfer.amount = AmountFromValue(request.params[2]);
     if (transfer.amount <= 0 || transfer.from == transfer.to) throw JSONRPCError(RPC_INVALID_PARAMETER, "Move a positive amount to another account");
-    // The chain would ignore a transfer that leaves either account with less than a voter of its own holds.
+    // A transfer leaves each account with no reputation or with at least what a voter of its own holds:
+    // the chain would move the whole holding of one that it would leave with less, and ignore one that
+    // would make a smaller holding (a whole holding moves wherever it goes). Leaving less is refused
+    // here, so that what moves is what was asked for.
     const auto params{pwallet->chain().getHivemindParams()};
     const int64_t least{params.reputation_supply / hivemind::MAX_VOTERS};
     const auto holdings{pwallet->chain().getReputation()};
     const auto held{[&](const Account& account) { const auto it{holdings.find(account)}; return it == holdings.end() ? int64_t{0} : it->second; }};
     // (More than the account holds, as the chain stands, is sent all the same: mined, it does nothing.)
     const int64_t left{held(transfer.from) - transfer.amount};
-    if ((left > 0 && left < least) || held(transfer.to) + transfer.amount < least) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("A transfer leaves each account with no reputation or with at least %s", FormatMoney(least)));
+    if ((left > 0 && left < least) || (left != 0 && held(transfer.to) + transfer.amount < least)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("A transfer leaves each account with no reputation or with at least %s; a whole holding moves wherever it goes", FormatMoney(least)));
     }
     const auto [tx, index]{SendAction(*pwallet, transfer, 0, transfer.from)};
     UniValue result(UniValue::VOBJ);

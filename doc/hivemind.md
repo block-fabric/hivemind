@@ -150,7 +150,11 @@ could never be mined.
   100 000 positions hold 100 coins. A sale leaves no shares of the position or
   shares worth `MIN_POSITION` (what selling them would bring right after), so
   that a purchase and a sale of all but a unit, in one transaction, do not make
-  a position for next to nothing. And a position holds at least `MIN_POSITION`
+  a position for next to nothing. A sale that would leave less sells the whole
+  position (the wallet refuses to ask for one, as the chain stands): the price
+  can move between the signing and the block, and a sale refused for that would
+  let anyone who trades first keep a holder from leaving. `min_proceeds`, of
+  what was asked for, still bounds what is paid. And a position holds at least `MIN_POSITION`
   shares for each state of its market (`MinPositionShares`), when it is
   opened and when a sale leaves some: a share of a state pays 1/states of a
   coin when the market settles at even odds, so every position then pays at
@@ -182,7 +186,12 @@ could never be mined.
   `reputation_supply / MAX_VOTERS`, so at most about `MAX_VOTERS` (10 000)
   accounts are made at that size; holdings that shrink below it by resolution
   can only be emptied, so splitting costs the splitter the reputation it loses
-  by not voting. Such holdings are not left to add up either: one that is
+  by not voting. A transfer that would leave less than that behind moves the
+  whole holding (a resolution can change a holding between the signing and
+  the block, and a transfer refused for it could be kept from ever emptying
+  it; the wallet refuses to ask for one, as the chain stands), and a whole
+  holding moves wherever it goes, even into an account that holds nothing, as
+  it makes no new holding. Such holdings are not left to add up either: one that is
   below that size before a resolution and after it is folded into the holdings
   of those who voted (if nobody did, of the holders of at least that size), by
   what they come out with. A holding that falls below has a period to be moved

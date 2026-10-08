@@ -111,7 +111,8 @@ struct HivemindParams {
      *    voter's own through a resolution are folded into the voters';
      *  - and, from the fourth audit: the refunds of withdrawals a transaction asks for count
      *    against MAX_TX_PAYOUTS_PER_BLOCK; a position holds at least MinPositionShares(), when it is
-     *    opened and when a sale leaves some.
+     *    opened and when a sale leaves some; a sale or a transfer that would leave less than its
+     *    least moves the whole holding, and a whole holding of reputation moves wherever it goes.
      * On the test network audit_height is the same height: ballots need the first audit's rules.
      */
     int audit2_height{0};
