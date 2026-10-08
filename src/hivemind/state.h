@@ -90,6 +90,14 @@ inline constexpr CAmount MIN_PAYOUT{1000};
  * number is the coins each has to hold until then.
  */
 inline constexpr CAmount MIN_POSITION{100000};
+/**
+ * Least shares a position of a market of `states` states holds (from audit2_height), when it is opened
+ * and when a sale leaves some: MIN_POSITION for each state. A share of a state pays 1/states of a coin
+ * when the market settles at even odds, so a position then pays at least MIN_POSITION, and the payouts
+ * of a market are bounded by its treasury over MIN_POSITION -- not `states` times more, as positions
+ * bought at a high price and left to fall would be.
+ */
+inline constexpr int64_t MinPositionShares(size_t states) { return MIN_POSITION * static_cast<int64_t>(states); }
 /** What is kept, for the voters, of coins given back for an action that could not be done. */
 inline constexpr CAmount REFUND_FEE{1000};
 /**
@@ -515,9 +523,16 @@ public:
     /**
      * Why a sale of `shares` of a position would not be made in a block at `height`, beyond what
      * WhyNoTrade() says: the account does not hold as many, or (from audit2_height) what it would
-     * keep is worth less than MIN_POSITION. Empty if it would be made, as the state stands.
+     * keep is worth less than MIN_POSITION or fewer shares than MinPositionShares(). Empty if it would
+     * be made, as the state stands.
      */
     std::string WhyNoSale(const PositionKey& key, int64_t shares, int height, const Consensus::HivemindParams& params) const;
+    /**
+     * Why a purchase of `shares` for a position would be refunded in a block at `height`, beyond what
+     * WhyNoTrade() says: (from audit2_height) the position it opens costs less than MIN_POSITION, or it
+     * leaves the position with fewer than MinPositionShares(). Empty if it would be made, as the state stands.
+     */
+    std::string WhyNoPurchase(const PositionKey& key, int64_t shares, int height, const Consensus::HivemindParams& params) const;
     /** Whether a market can be traded in now. */
     bool TradingOpen(const Market& market) const;
     /**

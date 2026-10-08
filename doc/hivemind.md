@@ -59,6 +59,7 @@ checks every trade, every vote and every payout.
 | Kept of the proceeds of a sale and of change, for the voters | 0.00001 | `PAYOUT_FEE` |
 | Payouts the transactions of a block may give rise to | 250 | `MAX_TX_PAYOUTS_PER_BLOCK` |
 | Least a sale leaves of a position, if anything | worth 0.001 | `MIN_POSITION` |
+| Least shares of a position, opened or left by a sale | 0.001 for each state of the market | `MinPositionShares` |
 | Least payout of a settlement, a sale, change or a refund (less goes to the voters) | 0.00001 | `MIN_PAYOUT` |
 | Reputation that seals a vote, and least holding a transfer may leave | `reputation_supply / MAX_VOTERS` (0.01) | `MAX_VOTERS` |
 | Decisions in a ballot | 1 to 100, all closing in the same period | `MAX_DECISIONS_PER_PERIOD` |
@@ -149,7 +150,15 @@ could never be mined.
   100 000 positions hold 100 coins. A sale leaves no shares of the position or
   shares worth `MIN_POSITION` (what selling them would bring right after), so
   that a purchase and a sale of all but a unit, in one transaction, do not make
-  a position for next to nothing. Requiring purchases to be signed by their
+  a position for next to nothing. And a position holds at least `MIN_POSITION`
+  shares for each state of its market (`MinPositionShares`), when it is
+  opened and when a sale leaves some: a share of a state pays 1/states of a
+  coin when the market settles at even odds, so every position then pays at
+  least `MIN_POSITION`, and the payouts of a market are bounded by its
+  treasury over `MIN_POSITION`. Otherwise positions bought for `MIN_POSITION`
+  at a price near one (pushed up by a purchase of the same author, sold back
+  after) would hold a sixteenth of that per state in a market of 16 states, and
+  make sixteen times as many payouts for the coins locked. Requiring purchases to be signed by their
   account was considered and not done: keys are free, so it would bound nothing,
   and it would cost 65 bytes and a signature check per purchase. Dust (below
   `MIN_PAYOUT`) of sales, change and refunds goes to the voters' pot.

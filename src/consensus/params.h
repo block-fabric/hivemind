@@ -110,7 +110,8 @@ struct HivemindParams {
      *    leaves no shares or shares worth MIN_POSITION; holdings of reputation that stay below a
      *    voter's own through a resolution are folded into the voters';
      *  - and, from the fourth audit: the refunds of withdrawals a transaction asks for count
-     *    against MAX_TX_PAYOUTS_PER_BLOCK.
+     *    against MAX_TX_PAYOUTS_PER_BLOCK; a position holds at least MinPositionShares(), when it is
+     *    opened and when a sale leaves some.
      * On the test network audit_height is the same height: ballots need the first audit's rules.
      */
     int audit2_height{0};

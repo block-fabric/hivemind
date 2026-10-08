@@ -917,6 +917,17 @@ BOOST_AUTO_TEST_CASE(a_position_is_opened_with_min_position)
         BOOST_CHECK_EQUAL(state.PositionOf({market, large, 1}), ONE);
         BOOST_REQUIRE(state.ApplyTx(ActionTx(Buy(market, large, few), COIN, 12), 1, params, payouts, reason));
         BOOST_CHECK_EQUAL(state.PositionOf({market, large, 1}), ONE + few);
+
+        // And it holds MIN_POSITION shares for each state of the market, whatever they cost: bought at a
+        // high price, fewer would pay less than MIN_POSITION when the market settles at even odds.
+        BOOST_REQUIRE(state.ApplyTx(ActionTx(Buy(market, large, 5 * ONE), 10 * COIN, 13), 1, params, payouts, reason));
+        const int64_t dear{3 * hivemind::MIN_POSITION / 2};
+        BOOST_REQUIRE(*state.Quote(market, 1, dear) > hivemind::MIN_POSITION && dear < hivemind::MinPositionShares(2));
+        const Account other{TestAccount(9)};
+        BOOST_CHECK_EQUAL(state.WhyNoPurchase({market, other, 1}, dear, 1, params).empty(), !audit2);
+        BOOST_REQUIRE(state.ApplyTx(ActionTx(Buy(market, other, dear), COIN, 14), 1, params, payouts, reason));
+        BOOST_CHECK_EQUAL(state.PositionOf({market, other, 1}), audit2 ? 0 : dear);
+        BOOST_CHECK(state.WhyNoPurchase({market, other, 1}, hivemind::MinPositionShares(2), 1, params).empty());
     }
 }
 
@@ -1407,6 +1418,18 @@ BOOST_AUTO_TEST_CASE(a_sale_leaves_a_position_or_none)
         SignOutput(tx, 1, other, params, 1);
         BOOST_REQUIRE(state.ApplyTx(CTransaction{tx}, 1, params, payouts, reason));
         BOOST_CHECK_EQUAL(state.PositionOf({market, fresh, 1}), ONE);
+
+        // What is left holds MinPositionShares() as well: at a price near one, fewer shares can be worth
+        // MIN_POSITION, and would pay less at even odds.
+        const int64_t keep{3 * hivemind::MIN_POSITION / 2};
+        sell.account = holder;
+        sell.shares = ONE - keep;
+        BOOST_REQUIRE(state.ApplyTx(ActionTx(Buy(market, holder, ONE), 2 * COIN, 15), 1, params, payouts, reason));
+        BOOST_REQUIRE_EQUAL(state.PositionOf(position), ONE);
+        BOOST_CHECK(-*state.Quote(market, 1, -keep) > hivemind::MIN_POSITION);
+        BOOST_CHECK(state.WhyNoSale(position, ONE - keep, 1, params).find("at least 0.002 shares") != std::string::npos);
+        BOOST_REQUIRE(state.ApplyTx(SignedTx(sell, 0, 16, key, params, 1), 1, params, payouts, reason));
+        BOOST_CHECK_EQUAL(state.PositionOf(position), ONE);
     }
 }
 

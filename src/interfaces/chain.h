@@ -231,6 +231,10 @@ public:
     //! is worth too little; empty if it would make it, as the chain stands.
     virtual std::string whyNoMarketSale(const uint256& market, const uint160& account, uint8_t state, int64_t shares) = 0;
 
+    //! Why the next block would refund a purchase of `shares` for a position: the position it opens costs
+    //! too little, or it holds too few shares; empty if it would make it, as the chain stands.
+    virtual std::string whyNoMarketPurchase(const uint256& market, const uint160& account, uint8_t state, int64_t shares) = 0;
+
     //! Why a market on these decisions would not be opened by the next block; empty if it would be.
     virtual std::string whyNoMarketOn(const std::vector<uint256>& decisions) = 0;
     //! How often the decision was put off to be voted again; nullopt if there is no such decision.

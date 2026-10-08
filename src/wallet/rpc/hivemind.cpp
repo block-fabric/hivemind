@@ -326,7 +326,9 @@ RPCMethod buyshares()
         "buyshares",
         "Buy shares of a state of a market. A share pays one coin if its state comes true. The price moves with every\n"
         "trade; if, when the transaction is mined, the shares cost more than maxcost, nothing is bought and the coins come back.\n"
-        "What maxcost leaves over the cost comes back too, less 0.00001 for the voters (a payout costs every node)." +
+        "What maxcost leaves over the cost comes back too, less 0.00001 for the voters (a payout costs every node).\n"
+        "A purchase that opens a position costs at least 0.001, and a position holds at least 0.001 shares for each state\n"
+        "of its market." +
         HELP_REQUIRING_PASSPHRASE,
         {
             {"market", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The id of the market"},
@@ -355,11 +357,13 @@ RPCMethod buyshares()
     const auto quote{pwallet->chain().quoteMarketTrade(buy.market, buy.state, buy.shares)};
     if (!quote) throw JSONRPCError(RPC_INVALID_PARAMETER, pwallet->chain().whyNoMarketTrade(buy.market, buy.state, buy.shares));
     const CAmount max_cost{request.params[3].isNull() ? *quote + *quote / 100 + 1 : AmountFromValue(request.params[3])};
-    // A new account holds no position: the chain would give the coins back, less a fee.
-    if (request.params[4].isNull() && *quote < hivemind::MIN_POSITION) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("A purchase that opens a position costs at least %s: buy more shares", FormatMoney(hivemind::MIN_POSITION)));
+    // A position too small would not be opened: the chain would give the coins back, less a fee. A new
+    // account holds no position.
+    const std::optional<Account> given{request.params[4].isNull() ? std::nullopt : std::optional{ParseTradeAccount(request.params[4])}};
+    if (const std::string why{pwallet->chain().whyNoMarketPurchase(buy.market, given.value_or(Account{}), buy.state, buy.shares)}; !why.empty()) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, why);
     }
-    buy.account = request.params[4].isNull() ? NewAccount(*pwallet, "market shares") : ParseTradeAccount(request.params[4]);
+    buy.account = given ? *given : NewAccount(*pwallet, "market shares");
     const auto [tx, index]{SendAction(*pwallet, buy, max_cost)};
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", tx->GetHash().GetHex());
@@ -377,7 +381,7 @@ RPCMethod sellshares()
         "sellshares",
         "Sell shares back to the market maker of a market. The block that mines the transaction pays the proceeds to the account,\n"
         "less 0.00001 for the voters (a payout costs every node). A sale leaves the account no shares of the state, or shares\n"
-        "worth at least 0.001, as a purchase that opens a position costs." +
+        "worth at least 0.001, as a purchase that opens a position costs, and at least 0.001 for each state of the market." +
         HELP_REQUIRING_PASSPHRASE,
         {
             {"market", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The id of the market"},

@@ -518,9 +518,27 @@ std::string State::WhyNoSale(const PositionKey& key, int64_t shares, int height,
     after[key.state] -= shares;
     without = after;
     without[key.state] -= position - shares;
-    if (without[key.state] < 0 || -LmsrTradeCost(after, without, market->opening.liquidity) < MIN_POSITION) {
-        return strprintf("A sale leaves no shares or shares worth at least %s: sell all %s or fewer.",
-                         FormatMoney(MIN_POSITION), FormatMoney(position));
+    if (position - shares < MinPositionShares(market->shares.size()) || without[key.state] < 0 ||
+        -LmsrTradeCost(after, without, market->opening.liquidity) < MIN_POSITION) {
+        return strprintf("A sale leaves no shares, or at least %s shares worth at least %s: sell all %s or fewer.",
+                         FormatMoney(MinPositionShares(market->shares.size())), FormatMoney(MIN_POSITION), FormatMoney(position));
+    }
+    return {};
+}
+
+std::string State::WhyNoPurchase(const PositionKey& key, int64_t shares, int height, const Consensus::HivemindParams& params) const
+{
+    const auto market{GetMarket(key.market)};
+    if (!market || key.state >= market->shares.size() || height < params.audit2_height || shares <= 0) return {};
+    const int64_t position{PositionOf(key)};
+    std::vector<int64_t> after{market->shares};
+    after[key.state] += shares;
+    if (position == 0 && LmsrTradeCost(market->shares, after, market->opening.liquidity) < MIN_POSITION) {
+        return strprintf("A purchase that opens a position costs at least %s: buy more shares.", FormatMoney(MIN_POSITION));
+    }
+    if (position + shares < MinPositionShares(market->shares.size())) {
+        return strprintf("A position in this market holds at least %s shares (%s for each of its %u states): buy more shares.",
+                         FormatMoney(MinPositionShares(market->shares.size())), FormatMoney(MIN_POSITION), unsigned(market->shares.size()));
     }
     return {};
 }
@@ -697,6 +715,7 @@ bool State::ApplyTxSteps(const CTransaction& tx, int height, const Consensus::Hi
             if (cost <= 0 || cost > MAX_MONEY || cost + TradeFee(cost, market.opening.fee_bps) > out.nValue || !MoneyRange(market.treasury + cost) ||
                 (height >= params.audit_height && cost < MIN_PURCHASE) ||
                 (audit2 && cost < MIN_POSITION && PositionOf(key) == 0) ||
+                (audit2 && PositionOf(key) + buy->shares < MinPositionShares(after.size())) ||
                 market.treasury + cost < *std::max_element(after.begin(), after.end())) {
                 refund(buy->account);
                 continue;
@@ -724,14 +743,16 @@ bool State::ApplyTxSteps(const CTransaction& tx, int height, const Consensus::Hi
             // brings less than that pays nothing out, and can still close a position).
             if (std::max<CAmount>(0, proceeds - fee - (audit2 ? PAYOUT_FEE : 0)) < sell->min_proceeds || proceeds - fee < 0 ||
                 market.treasury - proceeds < *std::max_element(after.begin(), after.end())) continue;
-            // What is left of the position is worth MIN_POSITION, or there is none left (from
-            // audit2_height): otherwise a purchase and a sale of nearly all of it, in one transaction,
-            // would make a position, which is a payout at settlement, for next to nothing.
+            // What is left of the position is worth MIN_POSITION, and holds MinPositionShares(), or
+            // there is none left (from audit2_height): otherwise a purchase and a sale of nearly all of
+            // it, in one transaction, would make a position, which is a payout at settlement, for next
+            // to nothing.
             const int64_t left{*position - sell->shares};
             if (audit2 && left > 0) {
                 std::vector<int64_t> without{after};
                 without[sell->state] -= left;
-                if (without[sell->state] < 0 || -LmsrTradeCost(after, without, market.opening.liquidity) < MIN_POSITION) continue;
+                if (left < MinPositionShares(after.size()) || without[sell->state] < 0 ||
+                    -LmsrTradeCost(after, without, market.opening.liquidity) < MIN_POSITION) continue;
             }
             market.shares = std::move(after);
             market.treasury -= proceeds;

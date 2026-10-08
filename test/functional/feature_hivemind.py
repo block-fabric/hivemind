@@ -162,6 +162,9 @@ class HivemindTest(SidechainTest):
         self.mine_txs()
         dave = buy["account"]
         assert_equal(other.listpositions(dave), [{"market": market["id"], "state": 1, "shares": 3}])
+        # A position holds at least 0.001 shares for each state of its market, whatever they cost.
+        assert_greater_than(other.quotetrade(market["id"], 1, Decimal("0.0019")), Decimal("0.001"))
+        assert_raises_rpc_error(-8, "A position in this market holds at least 0.002 shares", other.buyshares, market["id"], 1, Decimal("0.0019"))
         rain_market = side.getmarket(market["id"])
         assert_equal(rain_market["treasury"], market["funding"] + Decimal("1.61208064"))
         assert_equal(rain_market["fees"], Decimal("0.01612081"))
@@ -184,7 +187,7 @@ class HivemindTest(SidechainTest):
         assert_raises_rpc_error(-4, "cannot sign for the account", side.sellshares, market["id"], 1, 1, dave)
         assert_raises_rpc_error(-8, "has not sold as many", other.sellshares, market["id"], 0, 1, dave)
         # A sale leaves no shares or shares worth what opens a position: no dust positions for next to nothing.
-        assert_raises_rpc_error(-8, "A sale leaves no shares or shares worth at least 0.001", other.sellshares, market["id"], 1, Decimal("2.99999"), dave)
+        assert_raises_rpc_error(-8, "A sale leaves no shares, or at least 0.002 shares worth at least 0.001", other.sellshares, market["id"], 1, Decimal("2.99999"), dave)
         proceeds = -other.quotetrade(market["id"], 1, -1)
         sell = other.sellshares(market["id"], 1, 1, dave)
         assert_equal(sell["quote"], proceeds)
