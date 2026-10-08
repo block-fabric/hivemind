@@ -56,6 +56,9 @@ checks every trade, every vote and every payout.
 | Least purchase of shares | 0.0001 | `MIN_PURCHASE` |
 | Least purchase that opens a position | 0.001 | `MIN_POSITION` |
 | Kept of a refund, for the voters | 0.00001 | `REFUND_FEE` |
+| Kept of the proceeds of a sale and of change, for the voters | 0.00001 | `PAYOUT_FEE` |
+| Payouts the transactions of a block may give rise to | 250 | `MAX_TX_PAYOUTS_PER_BLOCK` |
+| Least a sale leaves of a position, if anything | worth 0.001 | `MIN_POSITION` |
 | Least payout of a settlement, a sale, change or a refund (less goes to the voters) | 0.00001 | `MIN_PAYOUT` |
 | Reputation that seals a vote, and least holding a transfer may leave | `reputation_supply / MAX_VOTERS` (0.01) | `MAX_VOTERS` |
 | Decisions in a ballot | 1 to 100, all closing in the same period | `MAX_DECISIONS_PER_PERIOD` |
@@ -68,10 +71,18 @@ in `src/kernel/chainparams.cpp`. **The main network has no genesis account
 yet**; one has to be set before launch, and whoever holds its key decides
 every outcome until the reputation is spread.
 
-The rules of the audits start at heights of their own: `audit_height`
-(4200 on testnet) and `audit2_height` (from the start on the main network,
-signet and regtest; on testnet, which ran without them, the height is set
-when the release is deployed).
+The rules of the audits start at heights of their own: `audit_height` and
+`audit2_height` (from the start on the main network, signet and regtest; on
+testnet, which ran without them, both at the same height, set when the
+release is deployed: between the two, ballots, which are of the second
+audit's rules, would have been open to accounts without reputation). The
+rules of the third audit are part of `audit2_height`'s. On regtest,
+`-hivemindaudit2height=<n>` starts both at height `n`, to test the change.
+
+When the tip reaches the height before `audit2_height` (or goes back below
+it), the transactions of the mempool whose requests the next block's rules
+no longer take -- signed in the old form, say -- are removed from it: they
+could never be mined.
 
 ## Design choices
 
@@ -105,8 +116,16 @@ when the release is deployed).
   cannot be replayed, and (from `audit2_height`) the chain -- the hash of its
   genesis block, `genesis_hash` -- and the kind of action, so that it means
   nothing on another chain made of this code that shares an output with this
-  one. The signed message is `"Hivemind " + hex(H("Hivemind action",
-  genesis_hash, kind, first input, action script))`; before the height it was
+  one; and the output of the action and the outputs of the transaction, so
+  that whoever spends the first input can neither repeat a signed action in
+  other outputs (a transfer of reputation sixteen times over) nor move it, nor
+  change what the transaction pays. The signed message is
+  `"Hivemind " + hex(H("Hivemind action", genesis_hash, kind, n, outputs,
+  first input, action script))`, where `n` is the index of the output and
+  `outputs` is `H("Hivemind outputs", the outputs, each action without its
+  signature)` (`ActionOutputsHash`): the wallet makes the transaction with
+  room for the signatures and signs it last (so a fee bump, which changes the
+  change output, would need new signatures). Before the height it was
   `"Hivemind " + hex(H(first input, action script))`, which is still what is
   checked below it.
 - **The markets are kept on the store of the sidechain state**, one entry per
@@ -127,17 +146,41 @@ when the release is deployed).
   signed), so the number of positions in a market, each a payout when it
   settles, is bounded by money instead: a purchase that opens a position pays
   at least `MIN_POSITION` (0.001), which stays in the market until it settles.
-  100 000 positions hold 100 coins. Requiring purchases to be signed by their
+  100 000 positions hold 100 coins. A sale leaves no shares of the position or
+  shares worth `MIN_POSITION` (what selling them would bring right after), so
+  that a purchase and a sale of all but a unit, in one transaction, do not make
+  a position for next to nothing. Requiring purchases to be signed by their
   account was considered and not done: keys are free, so it would bound nothing,
   and it would cost 65 bytes and a signature check per purchase. Dust (below
   `MIN_PAYOUT`) of sales, change and refunds goes to the voters' pot.
+- **Payouts of transactions are scarce** (from `audit2_height`). Each sale,
+  and the change of a purchase or of the opening of a market, is a payout of
+  the coinbase: they pay `PAYOUT_FEE` to the voters' pot, as a refund pays
+  `REFUND_FEE`. And the transactions of a block give rise to at most
+  `MAX_TX_PAYOUTS_PER_BLOCK` (250) payouts of the markets: a transaction whose
+  requests would take the payouts of the block's transactions so far (refunds
+  of withdrawals counted) beyond is not valid in that block, and the miner
+  leaves it for the next. That is half of the 500 the queue of payouts of
+  transactions is sure to get of a block when deposits wait, so transactions
+  alone cannot make the queue grow, and what settlements put in it, which is
+  bounded by the coins held in positions, still drains. The bound is on the
+  block rather than on the transaction (which has 16 actions at most anyway):
+  it is what makes room scarce, and miners give it to the transactions that
+  pay the most for it. The shared queue code of the template is unchanged.
 - **Reputation is not split ever finer** (from `audit2_height`). Every
   resolution reads every holding, and writes those that change. A transfer
   leaves each of its accounts with none or with at least
   `reputation_supply / MAX_VOTERS`, so at most about `MAX_VOTERS` (10 000)
   accounts are made at that size; holdings that shrink below it by resolution
   can only be emptied, so splitting costs the splitter the reputation it loses
-  by not voting. Holdings that a resolution does not change are not rewritten,
+  by not voting. Such holdings are not left to add up either: one that is
+  below that size before a resolution and after it is folded into the holdings
+  of those who voted (if nobody did, of the holders of at least that size), by
+  what they come out with. A holding that falls below has a period to be moved
+  whole into another account or made up again; holdings made below the size
+  before `audit2_height` go at the first resolution from then on. So the
+  holdings are about `MAX_VOTERS` at most, plus those made since the last
+  resolution. Holdings that a resolution does not change are not rewritten,
   nor noted in the undo data. `gethivemindinfo` counts the holders without
   copying them, `listreputation count` gives the largest holders, and the
   wallet's own holdings come from `getwalletreputation` in one call (the
@@ -162,7 +205,10 @@ when the release is deployed).
 - **Sealed votes name their voter**: the commitment covers the voter, so a
   sealed vote cannot be copied by someone who has not formed an opinion. The
   wallet makes a new salt for every round of voting on a decision, and one per
-  period for ballots. A vote that was sealed with the salt of the round before
+  chain, period and set of decisions for ballots (a signature of the voter's
+  key on a message naming `genesis_hash`, the period and the decisions: a key
+  signs the same message on every chain made of this code, so a salt revealed
+  on one would otherwise open the same key's ballots on another). A vote that was sealed with the salt of the round before
   (mined after the decision was put off) is not revealed by the wallet: that
   salt is public, so the wallet asks for the vote to be sealed again.
 - **Reputation does not move while votes are revealed** (the last third of a
@@ -184,7 +230,10 @@ when the release is deployed).
   place); both fees go to the voters of those decisions.
   So filling a period, or crowding a decision with markets, costs more the
   further it goes, instead of being cheap and keeping everyone else out.
-  Skipped periods are resolved one at a time; holders of less than a
+  Skipped periods are resolved one at a time, those in which a decision
+  closed, and only those: a clock that jumps far (on a regtest chain whose
+  periods count from time 0, its first block is billions of seconds in) goes
+  through no periods with nothing in them. Holders of less than a
   10 000th of the reputation, and those who did not vote, are scored together
   as one. Resolved decisions and settled markets leave the state 30 periods
   later. The arithmetic of the vote scales its numbers so that nothing can
