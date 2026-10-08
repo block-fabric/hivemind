@@ -157,10 +157,10 @@ could never be mined.
   and the change of a purchase or of the opening of a market, is a payout of
   the coinbase: they pay `PAYOUT_FEE` to the voters' pot, as a refund pays
   `REFUND_FEE`. And the transactions of a block give rise to at most
-  `MAX_TX_PAYOUTS_PER_BLOCK` (250) payouts of the markets: a transaction whose
-  requests would take the payouts of the block's transactions so far (refunds
-  of withdrawals counted) beyond is not valid in that block, and the miner
-  leaves it for the next. That is half of the 500 the queue of payouts of
+  `MAX_TX_PAYOUTS_PER_BLOCK` (250) payouts, refunds of withdrawals included: a
+  transaction whose requests or refunds would take the payouts of the block's
+  transactions so far beyond is not valid in that block, and the miner leaves
+  it for the next (and fills the block with what still fits). That is half of the 500 the queue of payouts of
   transactions is sure to get of a block when deposits wait, so transactions
   alone cannot make the queue grow, and what settlements put in it, which is
   bounded by the coins held in positions, still drains. The bound is on the

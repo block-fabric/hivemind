@@ -108,7 +108,9 @@ struct HivemindParams {
      *  - and, from the third audit: the proceeds of a sale and change pay PAYOUT_FEE to the voters;
      *    the transactions of a block give rise to at most MAX_TX_PAYOUTS_PER_BLOCK payouts; a sale
      *    leaves no shares or shares worth MIN_POSITION; holdings of reputation that stay below a
-     *    voter's own through a resolution are folded into the voters'.
+     *    voter's own through a resolution are folded into the voters';
+     *  - and, from the fourth audit: the refunds of withdrawals a transaction asks for count
+     *    against MAX_TX_PAYOUTS_PER_BLOCK.
      * On the test network audit_height is the same height: ballots need the first audit's rules.
      */
     int audit2_height{0};

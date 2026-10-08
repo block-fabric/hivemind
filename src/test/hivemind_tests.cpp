@@ -4,6 +4,7 @@
 
 #include <common/signmessage.h>
 #include <consensus/params.h>
+#include <addresstype.h>
 #include <key.h>
 #include <sidechain/mainchain.h>
 #include <sidechain/state.h>
@@ -1269,6 +1270,62 @@ BOOST_AUTO_TEST_CASE(block_payouts_are_bounded)
             payouts.clear();
             BOOST_CHECK(state.ApplyTx(more, 2, params, payouts, reason));
         }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(withdrawal_refunds_count_against_the_payout_bound)
+{
+    // From audit2_height the refunds of withdrawals a transaction asks for count against the same bound
+    // as the payouts of the markets: otherwise one block could put thousands in the queue for free.
+    const CKey key{TestKey(1)};
+    for (const bool audit2 : {true, false}) {
+        Consensus::SidechainParams params;
+        params.hivemind.period_blocks = 6;
+        params.hivemind.audit2_height = audit2 ? 0 : 1000000;
+        sidechain::EmptyStore empty;
+        sidechain::StoreOverlay store{empty, /*journal=*/false};
+        sidechain::State side{store};
+        std::vector<CTxOut> payouts;
+        std::string reason;
+        const size_t many{hivemind::MAX_TX_PAYOUTS_PER_BLOCK + 10};
+        CMutableTransaction withdraw;
+        withdraw.vin.resize(1);
+        withdraw.vin[0].prevout = COutPoint{Txid::FromUint256(uint256{1}), 0};
+        for (size_t i{0}; i < many; ++i) {
+            withdraw.vout.emplace_back(100000, sidechain::WithdrawalScript(1000, key.GetPubKey().GetID(), GetScriptForDestination(WitnessV0KeyHash{key.GetPubKey()})));
+        }
+        const CTransaction withdrawals{withdraw};
+        BOOST_REQUIRE_MESSAGE(side.ApplyTx(withdrawals, 1, params, payouts, reason, /*main_pending=*/false), reason);
+        const auto refunds{[&](size_t from, size_t to, uint8_t salt) {
+            CMutableTransaction tx;
+            tx.vin.resize(1);
+            tx.vin[0].prevout = COutPoint{Txid::FromUint256(uint256{salt}), 0};
+            for (size_t i{from}; i < to; ++i) {
+                sidechain::RefundRequest request;
+                request.withdrawal = COutPoint{withdrawals.GetHash(), static_cast<uint32_t>(i)};
+                BOOST_REQUIRE(key.SignCompact(MessageHash(sidechain::RefundMessage(request.withdrawal)), request.signature));
+                tx.vout.emplace_back(0, sidechain::RefundScript(request));
+            }
+            return CTransaction{tx};
+        }};
+        // A few payouts of the block already: a transaction of refunds that would take them beyond is not valid.
+        payouts.assign(5, CTxOut{1000, CScript() << OP_TRUE});
+        const CTransaction all{refunds(0, hivemind::MAX_TX_PAYOUTS_PER_BLOCK, 2)};
+        BOOST_CHECK_EQUAL(side.ApplyTx(all, 2, params, payouts, reason, /*main_pending=*/false), !audit2);
+        if (!audit2) {
+            BOOST_CHECK_EQUAL(payouts.size(), 5 + hivemind::MAX_TX_PAYOUTS_PER_BLOCK);
+            continue;
+        }
+        BOOST_CHECK_EQUAL(reason, "hm-block-payouts-full");
+        BOOST_CHECK_EQUAL(payouts.size(), 5U);
+        BOOST_CHECK(side.GetWithdrawal(COutPoint{withdrawals.GetHash(), 0}));
+        // What fits is valid; and the next block takes the rest.
+        BOOST_CHECK(side.ApplyTx(refunds(0, hivemind::MAX_TX_PAYOUTS_PER_BLOCK - 5, 3), 2, params, payouts, reason, /*main_pending=*/false));
+        BOOST_CHECK_EQUAL(payouts.size(), hivemind::MAX_TX_PAYOUTS_PER_BLOCK);
+        BOOST_CHECK(!side.GetWithdrawal(COutPoint{withdrawals.GetHash(), 0}));
+        payouts.clear();
+        BOOST_CHECK(side.ApplyTx(refunds(hivemind::MAX_TX_PAYOUTS_PER_BLOCK - 5, many, 4), 3, params, payouts, reason, /*main_pending=*/false));
+        BOOST_CHECK_EQUAL(payouts.size(), many - (hivemind::MAX_TX_PAYOUTS_PER_BLOCK - 5));
     }
 }
 

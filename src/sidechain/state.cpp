@@ -449,6 +449,13 @@ bool State::ApplyTxSteps(const CTransaction& tx, int height, const Consensus::Si
     // The markets: a transaction that is not well formed is invalid.
     if (!hivemind::State{Writable()}.ApplyTx(tx, height, params.hivemind, payouts, reject_reason)) return false;
     payouts.insert(payouts.end(), refunds.begin(), refunds.end());
+    // Refunds are payouts of the block's transactions too (from the markets' audit2_height): they count
+    // against the same bound, or one block could put thousands in the queue for free. ApplyTx() drops
+    // what the transaction did, and the miner leaves it for a later block.
+    if (!refunds.empty() && height >= params.hivemind.audit2_height && payouts.size() > hivemind::MAX_TX_PAYOUTS_PER_BLOCK) {
+        reject_reason = "hm-block-payouts-full";
+        return false;
+    }
     return true;
 }
 
