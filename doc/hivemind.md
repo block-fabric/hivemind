@@ -54,9 +54,11 @@ checks every trade, every vote and every payout.
 | Listing fee | 0.001 | `listing_fee` |
 | Quorum | a fifth of the reputation must answer | `QUORUM_PERCENT` |
 | Least purchase of shares | 0.0001 | `MIN_PURCHASE` |
+| Least purchase that opens a position | 0.001 | `MIN_POSITION` |
 | Kept of a refund, for the voters | 0.00001 | `REFUND_FEE` |
-| Least payout of a settlement (less goes to the voters) | 0.00001 | `MIN_PAYOUT` |
-| Reputation that seals a vote | a share of `reputation_supply / MAX_VOTERS` at least | `MAX_VOTERS` |
+| Least payout of a settlement, a sale, change or a refund (less goes to the voters) | 0.00001 | `MIN_PAYOUT` |
+| Reputation that seals a vote, and least holding a transfer may leave | `reputation_supply / MAX_VOTERS` (0.01) | `MAX_VOTERS` |
+| Decisions in a ballot | 1 to 100, all closing in the same period | `MAX_DECISIONS_PER_PERIOD` |
 | Actions per transaction | 16 at most | `MAX_ACTIONS_PER_TX` |
 | Decisions per market | 1 to 4 | `max_market_decisions` |
 | Reputation supply | 100, to one account at the start | `reputation_supply`, `genesis_account` |
@@ -65,6 +67,11 @@ All in `Consensus::HivemindParams` (`src/consensus/params.h`), set per network
 in `src/kernel/chainparams.cpp`. **The main network has no genesis account
 yet**; one has to be set before launch, and whoever holds its key decides
 every outcome until the reputation is spread.
+
+The rules of the audits start at heights of their own: `audit_height`
+(4200 on testnet) and `audit2_height` (from the start on the main network,
+signet and regtest; on testnet, which ran without them, the height is set
+when the release is deployed).
 
 ## Design choices
 
@@ -93,9 +100,15 @@ every outcome until the reputation is spread.
   account lacks the shares), nothing happens and the coins burned for it are
   paid back, less 0.00001 for the voters: payouts take room in blocks, and
   refunds that cost nothing could be made by the thousand to hold back
-  everyone else's. Sales, transfers and sealed votes are signed by their account;
-  the signature names the first input of the transaction, so it cannot be
-  replayed.
+  everyone else's. Sales, transfers, sealed votes and ballots are signed by
+  their account; the signature names the first input of the transaction, so it
+  cannot be replayed, and (from `audit2_height`) the chain -- the hash of its
+  genesis block, `genesis_hash` -- and the kind of action, so that it means
+  nothing on another chain made of this code that shares an output with this
+  one. The signed message is `"Hivemind " + hex(H("Hivemind action",
+  genesis_hash, kind, first input, action script))`; before the height it was
+  `"Hivemind " + hex(H(first input, action script))`, which is still what is
+  checked below it.
 - **The markets are kept on the store of the sidechain state**, one entry per
   key (decisions, markets, positions, votes, reputation), with indexes so that
   no rule reads a table whole: open and resolved decisions by the period their
@@ -107,9 +120,51 @@ every outcome until the reputation is spread.
   reputation that counts as a voter of its own in the resolution; a settlement
   payout below `MIN_PAYOUT` goes to the voters' pot rather than taking room in
   the coinbase.
+- **Payouts do not hold back deposits** (from `audit2_height`). What a
+  settlement pays waits in the queue of payouts of transactions, with refunds,
+  change and sale proceeds, not in that of the deposits from the mainchain.
+  Positions are open to anyone who names an account (a purchase need not be
+  signed), so the number of positions in a market, each a payout when it
+  settles, is bounded by money instead: a purchase that opens a position pays
+  at least `MIN_POSITION` (0.001), which stays in the market until it settles.
+  100 000 positions hold 100 coins. Requiring purchases to be signed by their
+  account was considered and not done: keys are free, so it would bound nothing,
+  and it would cost 65 bytes and a signature check per purchase. Dust (below
+  `MIN_PAYOUT`) of sales, change and refunds goes to the voters' pot.
+- **Reputation is not split ever finer** (from `audit2_height`). Every
+  resolution reads every holding, and writes those that change. A transfer
+  leaves each of its accounts with none or with at least
+  `reputation_supply / MAX_VOTERS`, so at most about `MAX_VOTERS` (10 000)
+  accounts are made at that size; holdings that shrink below it by resolution
+  can only be emptied, so splitting costs the splitter the reputation it loses
+  by not voting. Holdings that a resolution does not change are not rewritten,
+  nor noted in the undo data. `gethivemindinfo` counts the holders without
+  copying them, `listreputation count` gives the largest holders, and the
+  wallet's own holdings come from `getwalletreputation` in one call (the
+  Markets tab shows the 200 largest and asks the wallet once per refresh, not
+  about every account).
+- **Ballots** (from `audit2_height`). `SealBallot` seals a voter's votes on up
+  to 100 decisions that close in the same period, with one commitment
+  (`BallotCommitment`: voter, period, decisions, answers, salt) and one
+  signature; `RevealBallot` gives the answers and the salt, without repeating
+  the decisions, which the chain keeps with the ballot. A ballot is the voter's
+  for its period: a new one replaces it, together with the seals that were
+  still its own; a single `sealvote` replaces it for its decision. Ballots of
+  periods that are over leave the state. Room: a reveal is about 100 bytes
+  plus 8 per decision, ~900 bytes at 100 decisions, so 10 000 voters
+  revealing 100 decisions take ~11 MB with transaction overhead, against
+  ~45 MB of weight-limited data space in the 8-hour reveal phase of a day
+  period at a block every 10 minutes (single reveals took ~100 MB and did not
+  fit, so censoring them, which costs voters reputation, was cheap). The seals
+  take ~3.3 KB per voter (~35 MB) in the two-thirds of the period meant for
+  sealing. The decisions of a ballot must close together: its reveal shows all
+  of its answers at once.
 - **Sealed votes name their voter**: the commitment covers the voter, so a
   sealed vote cannot be copied by someone who has not formed an opinion. The
-  wallet makes a new salt for every round of voting on a decision.
+  wallet makes a new salt for every round of voting on a decision, and one per
+  period for ballots. A vote that was sealed with the salt of the round before
+  (mined after the decision was put off) is not revealed by the wallet: that
+  salt is public, so the wallet asks for the vote to be sealed again.
 - **Reputation does not move while votes are revealed** (the last third of a
   period): a transfer mined then is ignored. Otherwise a holder could put the
   reputation behind whichever revealed vote turned out best.
@@ -167,7 +222,8 @@ Node: `gethivemindinfo`, `listdecisions`, `getdecision`, `listmarkets`,
 `getmarket`, `quotetrade`, `listreputation`, `listpositions`.
 
 Wallet: `createdecision`, `createmarket`, `buyshares`, `sellshares`,
-`transfervotecoin`, `sealvote`, `revealvote`.
+`transfervotecoin`, `sealvote`, `revealvote`, `sealballot`, `revealballot`,
+`getwalletreputation`.
 
 In `hivemind-qt`: Markets, in the navigation bar.
 
