@@ -867,6 +867,16 @@ public:
     void RemoveStaleDrivechainTxs() EXCLUSIVE_LOCKS_REQUIRED(::cs_main, m_mempool->cs);
 
     /**
+     * Hivemind: when the tip crosses audit2_height, one way or the other, remove the mempool
+     * transactions whose requests the rules of the next block no longer take (a signature is made for
+     * the rules of a height). Otherwise they would stay in the mempool, and the wallets that made them
+     * would wait for them, until they expired.
+     */
+    void RemoveStaleHivemindTxs() EXCLUSIVE_LOCKS_REQUIRED(::cs_main, m_mempool->cs);
+    //! Whether the rules of audit2_height applied to the next block when the mempool was last checked.
+    std::optional<bool> m_hivemind_audit2_checked GUARDED_BY(::cs_main);
+
+    /**
      * The sidechain database as the deposits in the mempool leave it, for the
      * given sidechains. Deposits chain on each other, each spending the escrow
      * output the previous one created.
