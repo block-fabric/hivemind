@@ -102,8 +102,14 @@ struct HivemindParams {
      *    reputation_supply / MAX_VOTERS, so that the reputation, which every resolution reads whole,
      *    is held by a bounded number of accounts;
      *  - ballots (SealBallot, RevealBallot): the votes of a voter on many decisions in one action;
-     *  - signed actions name the chain (genesis_hash) and their kind;
-     *  - proceeds of sales and coins given back below MIN_PAYOUT go to the voters' pot.
+     *  - signed actions name the chain (genesis_hash) and their kind, their output and the outputs
+     *    of their transaction;
+     *  - proceeds of sales and coins given back below MIN_PAYOUT go to the voters' pot;
+     *  - and, from the third audit: the proceeds of a sale and change pay PAYOUT_FEE to the voters;
+     *    the transactions of a block give rise to at most MAX_TX_PAYOUTS_PER_BLOCK payouts; a sale
+     *    leaves no shares or shares worth MIN_POSITION; holdings of reputation that stay below a
+     *    voter's own through a resolution are folded into the voters'.
+     * On the test network audit_height is the same height: ballots need the first audit's rules.
      */
     int audit2_height{0};
     /** The hash of the genesis block, which signed actions name from audit2_height. */

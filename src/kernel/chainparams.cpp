@@ -348,8 +348,9 @@ public:
         // The mainchain of the test network votes on a withdrawal bundle within 600 blocks.
         consensus.sidechain.bundle_retry_delay = 20;
         consensus.sidechain.hivemind.start_time = 1790900000;
-        // The test network ran without the audit's rules until then; see HivemindParams.
-        consensus.sidechain.hivemind.audit_height = 4200;
+        // The test network ran without the audit's rules until then; see HivemindParams. Both audits'
+        // rules start together: between the two, ballots would be open to accounts with no reputation.
+        consensus.sidechain.hivemind.audit_height = 5335; // = audit2_height, set with it at deploy
         consensus.sidechain.hivemind.audit2_height = 5335; // audit 2 rules on the test network: moved out while the third audit's fixes are made
         consensus.sidechain.hivemind.genesis_hash = consensus.hashGenesisBlock;
         // A test network goes through the voting in hours, not days.
@@ -558,6 +559,10 @@ public:
         consensus.hashGenesisBlock = genesis.GetHash();
         assert(consensus.hashGenesisBlock == uint256{"0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"});
         consensus.sidechain.hivemind.audit2_height = 0;
+        if (opts.hivemind_audit2_height) {
+            consensus.sidechain.hivemind.audit_height = *opts.hivemind_audit2_height;
+            consensus.sidechain.hivemind.audit2_height = *opts.hivemind_audit2_height;
+        }
         consensus.sidechain.hivemind.genesis_hash = consensus.hashGenesisBlock;
         assert(genesis.hashMerkleRoot == uint256{"4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"});
 

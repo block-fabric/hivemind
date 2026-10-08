@@ -4,10 +4,12 @@
 
 // Hivemind under fuzzing, on the store of the sidechain state: blocks of fuzzed listings, markets,
 // trades, reputation transfers, votes and ballots (signed by a few known keys), with periods going by so that
-// decisions resolve, markets settle and both are pruned. After every block: undone, the store is
-// exactly what it was (through serialization of the undo data too); a transaction that breaks a rule
-// changes nothing; every index is exactly what the tables imply; and the reputation adds up to the
-// supply.
+// decisions resolve, markets settle and both are pruned, and now and then a jump of the clock over very
+// many periods. After every block: undone, the store is exactly what it was (through serialization of
+// the undo data too); a transaction that breaks a rule changes nothing and pays nothing; a signed action
+// repeated in another output is no action (from audit2_height); the transactions of a block pay out no
+// more than MAX_TX_PAYOUTS_PER_BLOCK (from audit2_height); every index is exactly what the tables imply;
+// and the reputation adds up to the supply.
 
 #include <common/signmessage.h>
 #include <consensus/params.h>
@@ -47,21 +49,31 @@ void initialize_hivemind()
 
 Account AccountOf(const CKey& key) { return Account{key.GetPubKey().GetID()}; }
 
-/** A transaction with one input of its own and the action; signed, if the action is, by `key`. */
-CTransaction ActionTx(Action action, CAmount value, uint32_t salt, const CKey& key, const Consensus::HivemindParams& params, int height)
+/**
+ * A transaction with one input of its own and the action; signed, if the action is, by `key`. With
+ * `repeat`, the signed output is copied into a second one, as the one who spends the first input could.
+ */
+CTransaction ActionTx(Action action, CAmount value, uint32_t salt, const CKey& key, const Consensus::HivemindParams& params, int height, bool repeat)
 {
     CMutableTransaction tx;
     tx.vin.emplace_back(COutPoint{Txid::FromUint256(uint256{static_cast<uint8_t>(salt)}), salt});
-    const COutPoint first{tx.vin[0].prevout};
+    tx.vout.emplace_back(value, ActionScript(action));
     std::visit([&](auto& a) {
         if constexpr (requires { a.signature; }) {
             a.signature.clear();
-            const bool ok{key.SignCompact(MessageHash(ActionMessage(Action{a}, first, params, height)), a.signature)};
+            const std::string message{ActionMessage(Action{a}, tx.vin[0].prevout, 0, ActionOutputsHash(tx.vout), params, height)};
+            const bool ok{key.SignCompact(MessageHash(message), a.signature)};
             assert(ok);
         }
     }, action);
-    tx.vout.emplace_back(value, ActionScript(action));
+    tx.vout[0].scriptPubKey = ActionScript(action);
+    if (repeat) tx.vout.push_back(tx.vout[0]);
     return CTransaction{tx};
+}
+
+bool IsSigned(const Action& action)
+{
+    return std::visit([](const auto& a) { return requires { a.signature; }; }, action);
 }
 
 std::set<sidechain::StoreBytes> KeysUnder(const sidechain::StoreView& view, uint8_t table)
@@ -163,12 +175,15 @@ FUZZ_TARGET(hivemind_state, .init = initialize_hivemind)
     std::vector<std::tuple<size_t, uint32_t, std::vector<Id>, std::vector<int64_t>, uint256>> ballots;
 
     for (int blocks{0}; blocks < 60 && fdp.remaining_bytes() > 0; ++blocks) {
-        height += fdp.ConsumeIntegralInRange<int>(1, 2 * params.period_blocks);
+        // Now and then the clock jumps far, as on a chain whose clock starts at time 0: the periods in
+        // between have nothing to resolve.
+        height += fdp.ConsumeIntegralInRange<int>(1, 2 * params.period_blocks) + (fdp.ConsumeIntegralInRange<int>(0, 15) == 0 ? 1'000'000 * params.period_blocks : 0);
         const uint256 before{sidechain::StoreHash(cache)};
         sidechain::StoreOverlay block{cache, /*journal=*/true};
         State state{block};
-        std::vector<CTxOut> payouts;
-        state.BeginBlock(height, 0, params, payouts);
+        // What the block pays: of settlements, and of transactions, which are bounded.
+        std::vector<CTxOut> settled, payouts;
+        state.BeginBlock(height, 0, params, settled);
         std::vector<Id> decisions, markets;
         state.ForEachDecision([&](const Id& id, const Decision&) { decisions.push_back(id); return true; });
         state.ForEachMarket([&](const Id& id, const Market&) { markets.push_back(id); return true; });
@@ -291,14 +306,21 @@ FUZZ_TARGET(hivemind_state, .init = initialize_hivemind)
             }
             }
             if (!action) continue;
-            const CTransaction tx{ActionTx(*action, value, ++salt, g_keys[who], params, height)};
+            const bool repeat{fdp.ConsumeIntegralInRange<int>(0, 7) == 0};
+            const CTransaction tx{ActionTx(*action, value, ++salt, g_keys[who], params, height, repeat)};
             const uint256 before_tx{sidechain::StoreHash(block)};
+            const size_t paid{payouts.size()};
             std::string reason;
-            if (!state.ApplyTx(tx, height, params, payouts, reason)) {
+            const bool valid{state.ApplyTx(tx, height, params, payouts, reason)};
+            if (!valid) {
                 assert(!reason.empty());
                 assert(sidechain::StoreHash(block) == before_tx);
+                assert(payouts.size() == paid);
             }
+            // A signature is of its output alone.
+            if (repeat && IsSigned(*action) && height >= params.audit2_height) assert(!valid);
         }
+        if (height >= params.audit2_height) assert(payouts.size() <= MAX_TX_PAYOUTS_PER_BLOCK);
         const sidechain::StoreUndo undo{block.TakeUndo()};
         block.MergeInto(cache);
         CheckState(cache, params);

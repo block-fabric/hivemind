@@ -17,6 +17,8 @@ PERIOD_BLOCKS = 6
 SEAL_BLOCKS = 4
 LISTING_FEE = Decimal("0.001")
 REFUND_FEE = Decimal("0.00001")
+# Kept for the voters of the proceeds of a sale and of change.
+PAYOUT_FEE = Decimal("0.00001")
 
 
 class HivemindTest(SidechainTest):
@@ -165,10 +167,11 @@ class HivemindTest(SidechainTest):
         assert_equal(rain_market["fees"], Decimal("0.01612081"))
         assert_greater_than(rain_market["states"][1]["price"], Decimal("0.57"))
         assert_equal(sum(s["price"] for s in rain_market["states"]), 1)
-        # What was put up beyond the cost comes back with the coinbase, which takes a while to mature.
+        # What was put up beyond the cost comes back with the coinbase, which takes a while to mature, less
+        # what a payout keeps for the voters.
         for _ in range(2):
             self.bmm()
-        assert_equal(other.getbalance(), balance - quote - fee)
+        assert_equal(other.getbalance(), balance - quote - fee - PAYOUT_FEE)
 
         # A purchase that the price has moved away from does not happen.
         cheap = other.buyshares(market["id"], 1, 5, Decimal("0.1"), dave)
@@ -180,11 +183,14 @@ class HivemindTest(SidechainTest):
         # Selling one share back.
         assert_raises_rpc_error(-4, "cannot sign for the account", side.sellshares, market["id"], 1, 1, dave)
         assert_raises_rpc_error(-8, "has not sold as many", other.sellshares, market["id"], 0, 1, dave)
+        # A sale leaves no shares or shares worth what opens a position: no dust positions for next to nothing.
+        assert_raises_rpc_error(-8, "A sale leaves no shares or shares worth at least 0.001", other.sellshares, market["id"], 1, Decimal("2.99999"), dave)
         proceeds = -other.quotetrade(market["id"], 1, -1)
         sell = other.sellshares(market["id"], 1, 1, dave)
         assert_equal(sell["quote"], proceeds)
+        assert_equal(sell["proceeds"], proceeds - PAYOUT_FEE)
         block = self.mine_txs()
-        assert_equal(len([out for out in block["tx"][0]["vout"] if out["value"] == proceeds and out["scriptPubKey"].get("address") == dave]), 1)
+        assert_equal(len([out for out in block["tx"][0]["vout"] if out["value"] == proceeds - PAYOUT_FEE and out["scriptPubKey"].get("address") == dave]), 1)
         assert_equal(other.listpositions(dave)[0]["shares"], 2)
         # Shares of the market on two decisions: rain and many degrees.
         hot = other.buyshares(both["id"], 3, 2)

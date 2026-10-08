@@ -799,6 +799,12 @@ public:
         LOCK(::cs_main);
         return chainman().ActiveChainstate().SideState().Hivemind().WhyNoTrade(market, state, shares);
     }
+    std::string whyNoMarketSale(const uint256& market, const uint160& account, uint8_t state, int64_t shares) override
+    {
+        LOCK(::cs_main);
+        return chainman().ActiveChainstate().SideState().Hivemind().WhyNoSale(hivemind::PositionKey{market, account, state}, shares,
+                                                                             chainman().ActiveChain().Height() + 1, chainman().GetConsensus().sidechain.hivemind);
+    }
     std::optional<CAmount> quoteMarketTrade(const uint256& market, uint8_t state, int64_t shares) override
     {
         LOCK(::cs_main);

@@ -92,9 +92,13 @@ std::pair<CTransactionRef, uint32_t> SendAction(CWallet& wallet, T action, CAmou
     CHECK_NONFATAL(index < mtx.vout.size());
     if constexpr (requires { action.signature; }) {
         action.signature.clear();
-        // Signed for the next block, which is where the transaction goes: the message names the chain from audit2_height.
+        // Signed for the next block, which is where the transaction goes: the message names the chain,
+        // the output and the outputs of the transaction from audit2_height. The placeholder has the
+        // size of the signature, so that the fee is right, and is left out of what is signed, as the
+        // signature will be.
         const int next_height{wallet.chain().getHeight().value_or(-1) + 1};
-        action.signature = Sign(wallet, hivemind::ActionMessage(Action{action}, mtx.vin[0].prevout, wallet.chain().getHivemindParams(), next_height), *Assert(signer));
+        action.signature = Sign(wallet, hivemind::ActionMessage(Action{action}, mtx.vin[0].prevout, index, hivemind::ActionOutputsHash(mtx.vout),
+                                                                wallet.chain().getHivemindParams(), next_height), *Assert(signer));
         mtx.vout[index].scriptPubKey = script_of();
     }
     if (!wallet.SignTransaction(mtx)) throw JSONRPCError(RPC_WALLET_ERROR, "Signing the transaction failed");
@@ -128,14 +132,19 @@ uint256 VoteSalt(CWallet& wallet, const Account& voter, const hivemind::Id& deci
 }
 
 /**
- * What opens the seal of a ballot: a signature by the voter, as for a single vote. One for each period
- * in which decisions close: it is public once the ballot of that period is revealed, after which no
- * ballot of that period can be sealed any more.
+ * What opens the seal of a ballot: a signature by the voter, as for a single vote. One for each chain,
+ * period in which decisions close and set of decisions: it is public once the ballot is revealed, after
+ * which no ballot of that period can be sealed any more. The chain (its genesis block) is named, as the
+ * message a key signs is the same on every chain made of this code: the salt of a ballot on one would
+ * otherwise open the seal of the same key's ballot on another.
  */
-uint256 BallotSalt(CWallet& wallet, const Account& voter, uint32_t close_period)
+uint256 BallotSalt(CWallet& wallet, const Account& voter, uint32_t close_period, const std::vector<hivemind::Id>& decisions)
 {
-    const std::vector<unsigned char> signature{Sign(wallet, strprintf("Hivemind ballot salt period %u", close_period), voter)};
-    return Hash(signature);
+    HashWriter hasher;
+    hasher << decisions;
+    const std::string message{strprintf("Hivemind ballot salt chain %s period %u decisions %s",
+                                        wallet.chain().getHivemindParams().genesis_hash.GetHex(), close_period, hasher.GetHash().GetHex())};
+    return Hash(Sign(wallet, message, voter));
 }
 
 int64_t ParseAnswer(const UniValue& value)
@@ -287,7 +296,8 @@ RPCMethod buyshares()
     return RPCMethod{
         "buyshares",
         "Buy shares of a state of a market. A share pays one coin if its state comes true. The price moves with every\n"
-        "trade; if, when the transaction is mined, the shares cost more than maxcost, nothing is bought and the coins come back." +
+        "trade; if, when the transaction is mined, the shares cost more than maxcost, nothing is bought and the coins come back.\n"
+        "What maxcost leaves over the cost comes back too, less 0.00001 for the voters (a payout costs every node)." +
         HELP_REQUIRING_PASSPHRASE,
         {
             {"market", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The id of the market"},
@@ -336,19 +346,22 @@ RPCMethod sellshares()
 {
     return RPCMethod{
         "sellshares",
-        "Sell shares back to the market maker of a market. The block that mines the transaction pays the proceeds to the account." +
+        "Sell shares back to the market maker of a market. The block that mines the transaction pays the proceeds to the account,\n"
+        "less 0.00001 for the voters (a payout costs every node). A sale leaves the account no shares of the state, or shares\n"
+        "worth at least 0.001, as a purchase that opens a position costs." +
         HELP_REQUIRING_PASSPHRASE,
         {
             {"market", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The id of the market"},
             {"state", RPCArg::Type::NUM, RPCArg::Optional::NO, "The state"},
             {"shares", RPCArg::Type::AMOUNT, RPCArg::Optional::NO, "The number of shares"},
             {"account", RPCArg::Type::STR, RPCArg::Optional::NO, "The address of this wallet that holds the shares"},
-            {"minproceeds", RPCArg::Type::AMOUNT, RPCArg::DefaultHint{"1% below the current proceeds"}, "The least to get, fee deducted, or nothing is sold"},
+            {"minproceeds", RPCArg::Type::AMOUNT, RPCArg::DefaultHint{"1% below the current proceeds"}, "The least to get, fees deducted, or nothing is sold"},
         },
         RPCResult{RPCResult::Type::OBJ, "", "",
         {
             {RPCResult::Type::STR_HEX, "txid", "The id of the transaction"},
-            {RPCResult::Type::STR_AMOUNT, "quote", "What the shares yield now"},
+            {RPCResult::Type::STR_AMOUNT, "quote", "What the shares yield now, trading fee deducted (see quotetrade)"},
+            {RPCResult::Type::STR_AMOUNT, "proceeds", "What would be paid to the account now: the quote, less what a payout keeps for the voters"},
         }},
         RPCExamples{HelpExampleCli("sellshares", "\"marketid\" 1 3 \"address\"")},
         [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
@@ -363,13 +376,22 @@ RPCMethod sellshares()
     sell.account = ParseTradeAccount(request.params[3]);
     const auto quote{pwallet->chain().quoteMarketTrade(sell.market, sell.state, -sell.shares)};
     if (!quote) throw JSONRPCError(RPC_INVALID_PARAMETER, pwallet->chain().whyNoMarketTrade(sell.market, sell.state, -sell.shares));
-    if (*quote >= 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "Selling these shares would bring nothing");
-    const CAmount proceeds{-*quote};
+    if (const std::string why{pwallet->chain().whyNoMarketSale(sell.market, sell.account, sell.state, sell.shares)}; !why.empty()) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, why);
+    }
+    // From audit2_height a payout keeps PAYOUT_FEE for the voters: the least to get is of what is paid.
+    const auto params{pwallet->chain().getHivemindParams()};
+    const bool audit2{pwallet->chain().getHeight().value_or(-1) + 1 >= params.audit2_height};
+    const CAmount quoted{-*quote};
+    if (quoted <= 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "Selling these shares would bring nothing");
+    // Less than the fee: the sale closes the position and pays nothing out.
+    const CAmount proceeds{std::max<CAmount>(0, quoted - (audit2 ? hivemind::PAYOUT_FEE : 0))};
     sell.min_proceeds = request.params[4].isNull() ? proceeds - proceeds / 100 : AmountFromValue(request.params[4]);
     const auto [tx, index]{SendAction(*pwallet, sell, 0, sell.account)};
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", tx->GetHash().GetHex());
-    result.pushKV("quote", ValueFromAmount(proceeds));
+    result.pushKV("quote", ValueFromAmount(quoted));
+    result.pushKV("proceeds", ValueFromAmount(proceeds));
     return result;
 },
     };
@@ -551,7 +573,7 @@ RPCMethod sealballot()
         ordered.push_back(answer);
     }
     seal.close_period = *close_period;
-    seal.commitment = hivemind::BallotCommitment(seal.voter, seal.close_period, seal.decisions, ordered, BallotSalt(*pwallet, seal.voter, seal.close_period));
+    seal.commitment = hivemind::BallotCommitment(seal.voter, seal.close_period, seal.decisions, ordered, BallotSalt(*pwallet, seal.voter, seal.close_period, seal.decisions));
     const auto [tx, index]{SendAction(*pwallet, seal, 0, seal.voter)};
     UniValue result(UniValue::VOBJ);
     result.pushKV("txid", tx->GetHash().GetHex());
@@ -601,7 +623,7 @@ RPCMethod revealballot()
         reveal.answers.push_back(it->second);
     }
     if (answers.size() != decisions.size()) throw JSONRPCError(RPC_INVALID_PARAMETER, "The ballot has votes on fewer decisions than that");
-    reveal.salt = BallotSalt(*pwallet, reveal.voter, reveal.close_period);
+    reveal.salt = BallotSalt(*pwallet, reveal.voter, reveal.close_period, decisions);
     if (hivemind::BallotCommitment(reveal.voter, reveal.close_period, decisions, reveal.answers, reveal.salt) != commitment) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Those are not the answers that were sealed");
     }

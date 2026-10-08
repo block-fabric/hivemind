@@ -162,6 +162,8 @@ public:
         //! If set, the voting periods of the markets are this many seconds of mainchain time, as on the other
         //! networks, instead of a few blocks.
         std::optional<int64_t> hivemind_period_seconds{};
+        //! If set, the height from which the markets have the rules of both audits, instead of 0.
+        std::optional<int> hivemind_audit2_height{};
     };
 
     struct MainNetOptions {

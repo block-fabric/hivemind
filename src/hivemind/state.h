@@ -92,6 +92,20 @@ inline constexpr CAmount MIN_PAYOUT{1000};
 inline constexpr CAmount MIN_POSITION{100000};
 /** What is kept, for the voters, of coins given back for an action that could not be done. */
 inline constexpr CAmount REFUND_FEE{1000};
+/**
+ * What is kept, for the voters, of the proceeds of a sale and of the change of a purchase or of the
+ * opening of a market (from audit2_height): each is a payout, which costs every node and takes room
+ * in a block, as a refund does.
+ */
+inline constexpr CAmount PAYOUT_FEE{1000};
+/**
+ * Most payouts the transactions of a block may give rise to (from audit2_height); a transaction that
+ * would go beyond is not valid in that block, and waits for the next. A quarter of what a block pays
+ * (sidechain::MAX_PAYOUTS_PER_BLOCK), and half of what the queue of payouts of transactions is sure to
+ * get of a block: transactions alone cannot make that queue grow, and what settlements put in it is
+ * paid all the same.
+ */
+inline constexpr size_t MAX_TX_PAYOUTS_PER_BLOCK{250};
 /** Most actions in one transaction. */
 inline constexpr size_t MAX_ACTIONS_PER_TX{16};
 
@@ -239,12 +253,18 @@ bool IsActionScript(const CScript& script);
 std::optional<Action> ParseActionScript(const CScript& script);
 
 /**
- * The message an account signs to authorise an action in a block at `height`. It names the first
- * input of the transaction, which can be spent only once, so that the signature is of no use in
- * another transaction; and, from audit2_height, the chain (its genesis block) and the kind of action,
- * so that it is of no use on another chain that shares an output with this one, or as another action.
+ * The message an account signs to authorise the action of output `n` of a transaction, in a block at
+ * `height`. It names the first input of the transaction, which can be spent only once, so that the
+ * signature is of no use in another transaction; and, from audit2_height, the chain (its genesis
+ * block) and the kind of action, so that it is of no use on another chain that shares an output with
+ * this one, or as another action; and the place of the action and the outputs of the transaction
+ * (`outputs_hash`, ActionOutputsHash()), so that it cannot be repeated in other outputs of the same
+ * transaction, nor put in one that pays otherwise than the signer agreed to.
  */
-std::string ActionMessage(const Action& action, const COutPoint& first_input, const Consensus::HivemindParams& params, int height);
+std::string ActionMessage(const Action& action, const COutPoint& first_input, uint32_t n, const uint256& outputs_hash,
+                          const Consensus::HivemindParams& params, int height);
+/** The outputs of a transaction as signed actions name them: the signatures of actions left out, as they cannot sign themselves. */
+uint256 ActionOutputsHash(const std::vector<CTxOut>& outputs);
 /** What a sealed vote commits to. It names the voter, so that nobody can seal someone else's vote as their own. */
 uint256 VoteCommitment(const Id& decision, const Account& voter, int64_t answer, const uint256& salt);
 /** What a ballot commits to: the voter, the period, the decisions and an answer to each, in order. */
@@ -456,7 +476,9 @@ public:
     /**
      * Do what the outputs of a transaction ask for. What cannot be done is
      * left undone, and the coins burned for it are paid back.
-     * @return false if the transaction is not well formed, see CheckTx().
+     * @return false, and nothing done, if the transaction is not well formed (see CheckTx()), or
+     *         (from audit2_height) if it would take the payouts of the block's transactions, those
+     *         in `payouts`, beyond MAX_TX_PAYOUTS_PER_BLOCK.
      */
     [[nodiscard]] bool ApplyTx(const CTransaction& tx, int height, const Consensus::HivemindParams& params,
                                std::vector<CTxOut>& payouts, std::string& reject_reason);
@@ -490,6 +512,12 @@ public:
     std::optional<CAmount> Quote(const Id& market, uint8_t state, int64_t shares) const;
     /** Why Quote() has no price for this trade, in words for the one who wanted it; empty if it has one. */
     std::string WhyNoTrade(const Id& market, uint8_t state, int64_t shares) const;
+    /**
+     * Why a sale of `shares` of a position would not be made in a block at `height`, beyond what
+     * WhyNoTrade() says: the account does not hold as many, or (from audit2_height) what it would
+     * keep is worth less than MIN_POSITION. Empty if it would be made, as the state stands.
+     */
+    std::string WhyNoSale(const PositionKey& key, int64_t shares, int height, const Consensus::HivemindParams& params) const;
     /** Whether a market can be traded in now. */
     bool TradingOpen(const Market& market) const;
     /**
@@ -506,6 +534,9 @@ public:
     CAmount MarketFee(const std::vector<Id>& decisions, const Consensus::HivemindParams& params) const;
 
 private:
+    /** What ApplyTx() does, once the transaction is checked; it may still fail, half done. */
+    [[nodiscard]] bool ApplyTxSteps(const CTransaction& tx, int height, const Consensus::HivemindParams& params,
+                                    std::vector<CTxOut>& payouts, std::string& reject_reason);
     /** Drop decisions and markets that are long done with. */
     void Prune();
     /** Decisions not resolved whose vote closes in `close_period`. */
@@ -516,7 +547,9 @@ private:
      * Resolve the decisions whose vote closed before `new_period`. A decision voted on again is
      * voted on from `first_open` at the earliest: the first period that still has a time for sealing.
      */
-    void Resolve(uint32_t new_period, uint32_t first_open, const Consensus::HivemindParams& params, std::map<Account, CAmount>& paid);
+    void Resolve(uint32_t new_period, uint32_t first_open, const Consensus::HivemindParams& params, std::map<Account, CAmount>& paid, bool audit2);
+    /** The period in which the vote on the first open decision to close closes, if there is one. */
+    std::optional<uint32_t> FirstClose() const;
     void Settle(const Id& id, Market& market, std::map<Account, CAmount>& paid);
 
     // Writes, with the indexes kept in step.

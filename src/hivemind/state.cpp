@@ -13,9 +13,11 @@
 #include <hivemind/math.h>
 #include <pubkey.h>
 #include <streams.h>
+#include <util/moneystr.h>
 #include <util/strencodings.h>
 
 #include <algorithm>
+#include <numeric>
 #include <set>
 
 namespace hivemind {
@@ -42,11 +44,12 @@ T Unsigned(T action)
 }
 
 template <typename T>
-bool CheckSignature(const T& action, const Account& signer, const COutPoint& first_input, const Consensus::HivemindParams& params, int height)
+bool CheckSignature(const T& action, const Account& signer, const COutPoint& first_input, uint32_t n, const uint256& outputs_hash,
+                    const Consensus::HivemindParams& params, int height)
 {
     CPubKey pubkey;
     return action.signature.size() == CPubKey::COMPACT_SIGNATURE_SIZE &&
-           pubkey.RecoverCompact(MessageHash(ActionMessage(Action{Unsigned(action)}, first_input, params, height)), action.signature) &&
+           pubkey.RecoverCompact(MessageHash(ActionMessage(Action{Unsigned(action)}, first_input, n, outputs_hash, params, height)), action.signature) &&
            pubkey.IsCompressed() && pubkey.GetID() == CKeyID{signer};
 }
 
@@ -126,17 +129,40 @@ std::optional<Action> ParseActionScript(const CScript& script)
     }
 }
 
-std::string ActionMessage(const Action& action, const COutPoint& first_input, const Consensus::HivemindParams& params, int height)
+std::string ActionMessage(const Action& action, const COutPoint& first_input, uint32_t n, const uint256& outputs_hash,
+                          const Consensus::HivemindParams& params, int height)
 {
     HashWriter hasher;
     if (height >= params.audit2_height) {
         // The chain and the kind of action, ahead of the rest: a signature for another chain made of
-        // this code, or for another kind of action, is not one for this.
+        // this code, or for another kind of action, is not one for this. Then the output that asks for
+        // it, and what the transaction pays: the one who spends the first input could otherwise repeat
+        // the action in other outputs, or pay otherwise than the signer agreed to.
         const uint8_t kind{std::visit([](const auto& a) { return std::decay_t<decltype(a)>::KIND; }, action)};
-        hasher << std::string{"Hivemind action"} << params.genesis_hash << kind;
+        hasher << std::string{"Hivemind action"} << params.genesis_hash << kind << n << outputs_hash;
     }
     hasher << first_input << ActionScript(action);
     return "Hivemind " + hasher.GetHash().GetHex();
+}
+
+uint256 ActionOutputsHash(const std::vector<CTxOut>& outputs)
+{
+    HashWriter hasher;
+    hasher << std::string{"Hivemind outputs"};
+    WriteCompactSize(hasher, outputs.size());
+    for (const CTxOut& out : outputs) {
+        CScript script{out.scriptPubKey};
+        if (IsActionScript(script)) {
+            if (const auto action{ParseActionScript(script)}) {
+                script = ActionScript(std::visit([](auto a) {
+                    if constexpr (requires { a.signature; }) a.signature.clear();
+                    return Action{std::move(a)};
+                }, *action));
+            }
+        }
+        hasher << out.nValue << script;
+    }
+    return hasher.GetHash();
 }
 
 uint256 VoteCommitment(const Id& decision, const Account& voter, int64_t answer, const uint256& salt)
@@ -213,14 +239,20 @@ bool CheckTx(const CTransaction& tx, int height, const Consensus::HivemindParams
         return false;
     }};
     size_t actions{0};
-    for (const CTxOut& out : tx.vout) {
+    // What signatures name of the outputs (from audit2_height), made once for the transaction.
+    std::optional<uint256> outputs_hash;
+    for (uint32_t n{0}; n < tx.vout.size(); ++n) {
+        const CTxOut& out{tx.vout[n]};
         if (!IsActionScript(out.scriptPubKey)) continue;
         if (++actions > MAX_ACTIONS_PER_TX) return invalid("bad-hm-too-many-actions");
         const auto action{ParseActionScript(out.scriptPubKey)};
         if (!action) return invalid("bad-hm-format");
         if (tx.IsCoinBase()) return invalid("bad-hm-coinbase");
         const COutPoint& first_input{tx.vin[0].prevout};
-        const auto signed_by{[&](const auto& a, const Account& signer) { return CheckSignature(a, signer, first_input, params, height); }};
+        const auto signed_by{[&](const auto& a, const Account& signer) {
+            if (!outputs_hash) outputs_hash = height >= params.audit2_height ? ActionOutputsHash(tx.vout) : uint256{};
+            return CheckSignature(a, signer, first_input, n, *outputs_hash, params, height);
+        }};
         // Ballots are of the rules of audit2_height: before, they are what they were, no request at all.
         if (height < params.audit2_height && (std::holds_alternative<SealBallot>(*action) || std::holds_alternative<RevealBallot>(*action))) {
             return invalid("bad-hm-format");
@@ -475,6 +507,24 @@ std::string State::WhyNoTrade(const Id& market_id, uint8_t state, int64_t shares
     return {};
 }
 
+std::string State::WhyNoSale(const PositionKey& key, int64_t shares, int height, const Consensus::HivemindParams& params) const
+{
+    const int64_t position{PositionOf(key)};
+    if (shares > position) return "The account does not hold as many shares of this state.";
+    const auto market{GetMarket(key.market)};
+    if (!market || key.state >= market->shares.size() || height < params.audit2_height || shares == position) return {};
+    // As the chain checks it: what is kept is worth what it would bring back after the sale.
+    std::vector<int64_t> after{market->shares}, without;
+    after[key.state] -= shares;
+    without = after;
+    without[key.state] -= position - shares;
+    if (without[key.state] < 0 || -LmsrTradeCost(after, without, market->opening.liquidity) < MIN_POSITION) {
+        return strprintf("A sale leaves no shares or shares worth at least %s: sell all %s or fewer.",
+                         FormatMoney(MIN_POSITION), FormatMoney(position));
+    }
+    return {};
+}
+
 std::optional<CAmount> State::Quote(const Id& market_id, uint8_t state, int64_t shares) const
 {
     const auto found{GetMarket(market_id)};
@@ -533,7 +583,22 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
                     std::vector<CTxOut>& payouts, std::string& reject_reason)
 {
     if (!CheckTx(tx, height, params, reject_reason)) return false;
+    // All or nothing: a transaction can be found out of room for payouts once it is done.
+    sidechain::StoreOverlay tx_overlay{Writable(), /*journal=*/false};
+    const size_t paid{payouts.size()};
+    if (!State{tx_overlay}.ApplyTxSteps(tx, height, params, payouts, reject_reason)) {
+        payouts.resize(paid);
+        return false;
+    }
+    tx_overlay.MergeInto(Writable());
+    return true;
+}
+
+bool State::ApplyTxSteps(const CTransaction& tx, int height, const Consensus::HivemindParams& params,
+                         std::vector<CTxOut>& payouts, std::string& reject_reason)
+{
     const bool audit2{height >= params.audit2_height};
+    const size_t paid_before{payouts.size()};
     for (uint32_t n{0}; n < tx.vout.size(); ++n) {
         const CTxOut& out{tx.vout[n]};
         const auto action{ParseActionScript(out.scriptPubKey)};
@@ -556,6 +621,14 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
             const CAmount kept{std::min(out.nValue, REFUND_FEE)};
             SetVoterPot(VoterPot() + kept);
             pay(account, out.nValue - kept);
+        }};
+        // The proceeds of a sale, and change, are payouts too: from audit2_height they pay for theirs
+        // as a refund does, or a sale would make one for the price of a transaction fee.
+        const auto pay_out{[&](const Account& account, CAmount amount) {
+            if (amount <= 0) return;
+            const CAmount kept{audit2 ? std::min(amount, PAYOUT_FEE) : 0};
+            if (kept > 0) SetVoterPot(VoterPot() + kept);
+            pay(account, amount - kept);
         }};
 
         if (const auto* list{std::get_if<ListDecision>(&*action)}) {
@@ -604,7 +677,7 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
                 decision.fee += per_decision + (k == 0 ? fee - per_decision * static_cast<CAmount>(open->decisions.size()) : 0);
                 SetDecision(open->decisions[k], decision);
             }
-            pay(open->author, out.nValue - funding - fee);
+            pay_out(open->author, out.nValue - funding - fee);
             const Id id{MakeId(tx.GetHash(), n)};
             if (!GetMarket(id)) SetMarket(id, market);
         } else if (const auto* buy{std::get_if<BuyShares>(&*action)}) {
@@ -634,7 +707,7 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
             market.fees += fee;
             SetMarket(buy->market, market);
             SetPosition(key, PositionOf(key) + buy->shares);
-            pay(buy->account, out.nValue - cost - fee);
+            pay_out(buy->account, out.nValue - cost - fee);
         } else if (const auto* sell{std::get_if<SellShares>(&*action)}) {
             const auto found{GetMarket(sell->market)};
             const PositionKey key{sell->market, sell->account, sell->state};
@@ -647,14 +720,25 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
             // Never more than the treasury, which is money: the fee cannot overflow.
             if (proceeds <= 0 || proceeds > market.treasury) continue;
             const CAmount fee{TradeFee(proceeds, market.opening.fee_bps)};
-            if (proceeds - fee < sell->min_proceeds || proceeds - fee < 0 ||
+            // The least to get is of what is paid out: from audit2_height, less PAYOUT_FEE (a sale that
+            // brings less than that pays nothing out, and can still close a position).
+            if (std::max<CAmount>(0, proceeds - fee - (audit2 ? PAYOUT_FEE : 0)) < sell->min_proceeds || proceeds - fee < 0 ||
                 market.treasury - proceeds < *std::max_element(after.begin(), after.end())) continue;
+            // What is left of the position is worth MIN_POSITION, or there is none left (from
+            // audit2_height): otherwise a purchase and a sale of nearly all of it, in one transaction,
+            // would make a position, which is a payout at settlement, for next to nothing.
+            const int64_t left{*position - sell->shares};
+            if (audit2 && left > 0) {
+                std::vector<int64_t> without{after};
+                without[sell->state] -= left;
+                if (without[sell->state] < 0 || -LmsrTradeCost(after, without, market.opening.liquidity) < MIN_POSITION) continue;
+            }
             market.shares = std::move(after);
             market.treasury -= proceeds;
             market.fees += fee;
             SetMarket(sell->market, market);
-            SetPosition(key, *position - sell->shares);
-            pay(sell->account, proceeds - fee);
+            SetPosition(key, left);
+            pay_out(sell->account, proceeds - fee);
         } else if (const auto* transfer{std::get_if<TransferReputation>(&*action)}) {
             // Reputation does not move while votes are revealed: it would let a holder put it
             // behind whichever revealed vote turned out best. The period ends, and the votes are
@@ -700,7 +784,9 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
             revealed.answer = reveal->answer;
             SetVote(key, revealed);
         } else if (const auto* ballot{std::get_if<SealBallot>(&*action)}) {
-            if (height >= params.audit_height) {
+            // As a single seal, whatever audit_height is: ballots are of audit2_height's rules, and a
+            // seal costs every node a row.
+            if (height >= params.audit_height || audit2) {
                 const auto held{REPUTATION.Get(*m_view, ballot->voter)};
                 if (!held || *held < params.reputation_supply / MAX_VOTERS) continue;
             }
@@ -744,6 +830,13 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
             // Done with: what it sealed is shown.
             SetBallot(ballot_key, std::nullopt);
         }
+    }
+    // Room for payouts is scarce (from audit2_height): what a block pays, the coinbase creates, and
+    // every node keeps what waits. ApplyTx() drops what the transaction did, and the miner leaves it for
+    // a later block.
+    if (audit2 && payouts.size() > paid_before && payouts.size() > MAX_TX_PAYOUTS_PER_BLOCK) {
+        reject_reason = "hm-block-payouts-full";
+        return false;
     }
     return true;
 }
@@ -791,7 +884,19 @@ void State::Settle(const Id& id, Market& market, std::map<Account, CAmount>& pai
     market.settled = true;
 }
 
-void State::Resolve(uint32_t new_period, uint32_t first_open, const Consensus::HivemindParams& params, std::map<Account, CAmount>& paid)
+std::optional<uint32_t> State::FirstClose() const
+{
+    std::optional<uint32_t> first;
+    m_view->ForEach(sidechain::StoreBytes{OPEN_BY_CLOSE}, [&](const sidechain::StoreBytes& key, const sidechain::StoreBytes&) {
+        std::span<const unsigned char> rest{key};
+        rest = rest.subspan(1);
+        first = sidechain::KeyCodec<uint32_t>::Decode(rest);
+        return false;
+    });
+    return first;
+}
+
+void State::Resolve(uint32_t new_period, uint32_t first_open, const Consensus::HivemindParams& params, std::map<Account, CAmount>& paid, bool audit2)
 {
     // The decisions whose vote is over: open ones whose vote closed before this period, in the order
     // of their ids.
@@ -857,12 +962,42 @@ void State::Resolve(uint32_t new_period, uint32_t first_open, const Consensus::H
         if (amount == before) return;
         SetReputation(account, amount > 0 ? std::optional{amount} : std::nullopt);
     }};
-    for (size_t i{0}; i < voters.size(); ++i) set_reputation(voters[i], reputation[i], resolution.reputation[i]);
-    if (silent_total > 0) {
-        // What the silent come out with is theirs in the proportions they went in with.
-        const std::vector<int64_t> shares{Share(silent_reputation, resolution.reputation.back())};
-        for (size_t i{0}; i < silent.size(); ++i) set_reputation(silent[i], silent_reputation[i], shares[i]);
+    // What the silent come out with is theirs in the proportions they went in with.
+    std::vector<int64_t> shares{silent_total > 0 ? Share(silent_reputation, resolution.reputation.back()) : std::vector<int64_t>(silent.size(), 0)};
+    std::vector<int64_t> voter_shares(resolution.reputation.begin(), resolution.reputation.begin() + voters.size());
+    if (audit2) {
+        // Holdings below a voter's own, which no transfer makes (from audit2_height) but which
+        // resolutions leave, are folded into those of the voters (or, if nobody voted, of the holders
+        // who count as voters), by what they come out with: otherwise, made at that size and left to
+        // shrink, they would add up to ever more holdings for every resolution to read. A holding is
+        // given a period below the line to be moved whole into another or made up again: what is
+        // folded is what was below it before this resolution too.
+        int64_t folded{0};
+        for (size_t i{0}; i < silent.size(); ++i) {
+            if (silent_reputation[i] >= min_voter || shares[i] >= min_voter) continue;
+            folded += shares[i];
+        }
+        if (folded > 0) {
+            const auto weigh{[&](const std::vector<int64_t>& amounts, bool silent_side) {
+                std::vector<int64_t> weights;
+                for (size_t i{0}; i < amounts.size(); ++i) weights.push_back(!silent_side || shares[i] >= min_voter ? amounts[i] : 0);
+                return weights;
+            }};
+            std::vector<int64_t> voter_weights{weigh(voter_shares, false)}, silent_weights{weigh(shares, true)};
+            const bool to_voters{std::accumulate(voter_weights.begin(), voter_weights.end(), int64_t{0}) > 0};
+            const bool to_silent{!to_voters && std::accumulate(silent_weights.begin(), silent_weights.end(), int64_t{0}) > 0};
+            if (to_voters || to_silent) {
+                for (size_t i{0}; i < silent.size(); ++i) {
+                    if (silent_reputation[i] < min_voter && shares[i] < min_voter) shares[i] = 0;
+                }
+                std::vector<int64_t>& to{to_voters ? voter_shares : shares};
+                const std::vector<int64_t> extra{Share(to_voters ? voter_weights : silent_weights, folded)};
+                for (size_t i{0}; i < to.size(); ++i) to[i] += extra[i];
+            }
+        }
     }
+    for (size_t i{0}; i < voters.size(); ++i) set_reputation(voters[i], reputation[i], voter_shares[i]);
+    for (size_t i{0}; i < silent.size(); ++i) set_reputation(silent[i], silent_reputation[i], shares[i]);
     for (size_t j{0}; j < batch.size(); ++j) {
         Decision decision{*Assert(GetDecision(batch[j]))};
         // The votes are done with, whatever comes of them.
@@ -961,8 +1096,16 @@ void State::BeginBlock(int height, int64_t main_time, const Consensus::HivemindP
             SetDecision(id, decision);
         }
         std::map<Account, CAmount> paid;
-        // Periods the chain skipped are resolved one after the other, each on its own decisions.
-        for (uint32_t p{period + 1}; p <= clock.period; ++p) Resolve(p, first_open, params, paid);
+        // Periods the chain skipped are resolved one after the other, each on its own decisions: those
+        // in which some decision closed before. The others have nothing to resolve -- which, when the
+        // clock jumps far (on a chain that starts at time 0, say), would be very many periods to go through.
+        // A decision put off goes to a period from the clock's on, which no step of this loop resolves.
+        for (uint32_t p{period + 1}; p <= clock.period; ++p) {
+            const auto first{FirstClose()};
+            if (!first || *first >= clock.period) break;
+            p = std::max(p, *first + 1);
+            Resolve(p, first_open, params, paid, height >= params.audit2_height);
+        }
         PERIOD.Put(out, clock.period);
         REVEAL.Put(out, clock.reveal_phase);
         // Ballots of periods that are over are done with: their votes were weighed, or put off with
