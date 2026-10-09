@@ -53,6 +53,12 @@ void RunAsync(QObject* receiver, std::function<std::function<void()>()> work);
  */
 void Stop();
 
+/**
+ * Take calls again after Stop, on a new thread. For the tests, which run pages after an application
+ * that was shut down (and stopped the thread) in the same process. GUI thread only.
+ */
+void Restart();
+
 /** The parameters of a call. */
 UniValue Args(std::initializer_list<UniValue> values);
 /** Text of a string or number. */
