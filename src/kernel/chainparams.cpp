@@ -354,7 +354,7 @@ public:
         consensus.sidechain.hivemind.period_seconds = 60 * 60;
         consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("b8d111d9b7f7e29ec30b67f26c5922afa5b2d744");
         // The height of the mainchain block that activated the slot; nothing is left out at 0.
-        consensus.sidechain.main_activation_height = 0; // set after the slot activates on the restarted test network
+        consensus.sidechain.main_activation_height = 3433; // the block that activated the slot on the restarted test network
         // A tenth of the testnet mainchain's withdrawal_min_score (300); proposals within an hour.
         consensus.sidechain.pending_min_score = 30;
         consensus.sidechain.unproposed_expiry_blocks = 60;
