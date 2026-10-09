@@ -726,7 +726,7 @@ BOOST_AUTO_TEST_CASE(settlement_paid_from_the_transaction_queue)
     BOOST_CHECK_GE(side.TxQueue().size(), 3U);
     // A deposit owed in the same block goes first.
     const CTxOut deposit{5 * COIN, CScript() << OP_TRUE};
-    const auto paid{side.TakePayouts({deposit}, {}, /*shared=*/true)};
+    const auto paid{side.TakePayouts({deposit}, {})};
     BOOST_REQUIRE_GE(paid.size(), 4U);
     BOOST_CHECK(paid.front() == deposit);
 }
@@ -736,7 +736,6 @@ BOOST_AUTO_TEST_CASE(settlement_flood_leaves_deposits_their_share)
     // A market of more positions than a block pays: its settlement waits in the queue of transactions,
     // and the deposits owed meanwhile still get their half of every block, in order, until none is left.
     Consensus::SidechainParams params;
-    params.audit2_height = 0;
     params.hivemind.period_blocks = 6;
     params.hivemind.max_rolls = 0;
     sidechain::EmptyStore empty;
@@ -781,7 +780,7 @@ BOOST_AUTO_TEST_CASE(settlement_flood_leaves_deposits_their_share)
     const auto is_deposit{[&](const CTxOut& o) { return o.nValue >= COIN && o.nValue < COIN + static_cast<CAmount>(deposits.size()) && o.scriptPubKey == (CScript() << OP_TRUE); }};
 
     // First block: half for the deposits, half for the settlement.
-    const auto paid1{side.TakePayouts(deposits, {}, /*shared=*/true)};
+    const auto paid1{side.TakePayouts(deposits, {})};
     BOOST_REQUIRE_EQUAL(paid1.size(), sidechain::MAX_PAYOUTS_PER_BLOCK);
     for (size_t i{0}; i < half; ++i) BOOST_CHECK(paid1[i] == deposits[i]);
     BOOST_CHECK_EQUAL(std::count_if(paid1.begin(), paid1.end(), is_deposit), static_cast<long>(half));
@@ -789,7 +788,7 @@ BOOST_AUTO_TEST_CASE(settlement_flood_leaves_deposits_their_share)
     BOOST_CHECK_EQUAL(side.TxQueue().size(), settled - half);
 
     // Second block: the rest of the deposits, then the settlement takes what they leave.
-    const auto paid2{side.TakePayouts({}, {}, /*shared=*/true)};
+    const auto paid2{side.TakePayouts({}, {})};
     BOOST_REQUIRE_EQUAL(paid2.size(), std::min(sidechain::MAX_PAYOUTS_PER_BLOCK, 200 + settled - half));
     for (size_t i{0}; i < 200; ++i) BOOST_CHECK(paid2[i] == deposits[half + i]);
     BOOST_CHECK(side.Queue().empty());
@@ -797,19 +796,18 @@ BOOST_AUTO_TEST_CASE(settlement_flood_leaves_deposits_their_share)
 
     // The settlement is paid in full in the end, in order, each output once.
     std::vector<CTxOut> rest{side.TxQueue()};
-    while (!side.TxQueue().empty()) BOOST_REQUIRE(!side.TakePayouts({}, {}, /*shared=*/true).empty());
+    while (!side.TxQueue().empty()) BOOST_REQUIRE(!side.TakePayouts({}, {}).empty());
     BOOST_CHECK_EQUAL(half + (paid2.size() - 200) + rest.size(), settled);
 }
 
 BOOST_AUTO_TEST_CASE(settlement_and_bounded_tx_payouts_share_the_blocks)
 {
-    // The template's shared queues (sidechain audit2_height) with the markets' routing of settlements
+    // The template's shared queues with the markets' routing of settlements
     // and their bound on what a block's transactions pay: a settlement waits
     // in the queue of transactions, ahead of what later transactions give rise to; blocks whose
     // transactions give rise to MAX_TX_PAYOUTS_PER_BLOCK payouts each, while deposits keep coming,
     // still pay the settlement off and never let either queue grow.
     Consensus::SidechainParams params;
-    params.audit2_height = 0;
     params.hivemind.period_blocks = 6;
     params.hivemind.max_rolls = 0;
     sidechain::EmptyStore empty;
@@ -872,7 +870,7 @@ BOOST_AUTO_TEST_CASE(settlement_and_bounded_tx_payouts_share_the_blocks)
         std::vector<CTxOut> deposits;
         for (size_t i{0}; i < half + 100; ++i) deposits.emplace_back(static_cast<CAmount>(COIN + i), CScript() << OP_TRUE);
         const size_t deposits_before{side.Queue().size()};
-        const auto paid{side.TakePayouts(deposits, tx_payouts, /*shared=*/true)};
+        const auto paid{side.TakePayouts(deposits, tx_payouts)};
         // A full block, unless both queues hold less.
         BOOST_REQUIRE_EQUAL(paid.size(), std::min(sidechain::MAX_PAYOUTS_PER_BLOCK, deposits_before + deposits.size() + tx_queue_before + tx_payouts.size()));
         // Deposits get at least their half.

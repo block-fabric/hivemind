@@ -10,6 +10,7 @@
 #include <script/script.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <limits>
 #include <optional>
 
@@ -25,12 +26,11 @@ int Age(int proposed_height, int height) { return height - proposed_height + 1; 
 uint256 ParamsFingerprint(const Consensus::DrivechainParams& params)
 {
     // Every field: a parameter added later has to be added here as well.
-    static_assert(sizeof(Consensus::DrivechainParams) == 13 * sizeof(int32_t), "a new drivechain parameter goes into the fingerprint");
+    static_assert(sizeof(Consensus::DrivechainParams) == 10 * sizeof(int32_t), "a new drivechain parameter goes into the fingerprint");
     HashWriter hasher{};
     hasher << std::string{"Chains drivechain parameters"} << params.max_sidechains << params.activation_period << params.activation_max_failures
            << params.replacement_period << params.withdrawal_period << params.withdrawal_min_score << params.max_pending_bundles
-           << params.single_payout_height << params.idle_expiry_height << params.idle_expiry_blocks << params.audit2_height
-           << params.upvote_expiry_blocks << params.unvoted_forget_blocks;
+           << params.idle_expiry_blocks << params.upvote_expiry_blocks << params.unvoted_forget_blocks;
     return hasher.GetHash();
 }
 
@@ -39,16 +39,18 @@ uint256 ParamsFingerprint(const Consensus::DrivechainParams& params, const Conse
     // A chain that is no sidechain has nothing of it in the database.
     if (!sidechain.enabled) return ParamsFingerprint(params);
     // Every field: a parameter added later has to be added here as well.
-    static_assert(sizeof(Consensus::SidechainParams) == 208, "a new sidechain parameter goes into the fingerprint");
+    static_assert(sizeof(Consensus::SidechainParams) == 200, "a new sidechain parameter goes into the fingerprint");
+    static_assert(offsetof(Consensus::SidechainParams, hivemind) == 24 && offsetof(Consensus::SidechainParams, main_activation_height) == 184 &&
+                      offsetof(Consensus::SidechainParams, unproposed_expiry_blocks) == 192,
+                  "a new sidechain parameter goes into the fingerprint");
     // The markets' parameters too: their state is in the store. genesis_hash is left out, being
     // the hash of the genesis block, which the database is of already.
     static_assert(sizeof(Consensus::HivemindParams) == 160, "a new Hivemind parameter goes into the fingerprint");
     const Consensus::HivemindParams& hm{sidechain.hivemind};
     HashWriter hasher{};
     hasher << std::string{"Sidechain parameters"} << ParamsFingerprint(params) << sidechain.slot << sidechain.min_withdrawal
-           << sidechain.max_bundle_withdrawals << sidechain.bundle_retry_delay << sidechain.single_bundle_height
-           << sidechain.main_activation_height << sidechain.audit2_height << sidechain.pending_min_score
-           << sidechain.unproposed_expiry_blocks;
+           << sidechain.max_bundle_withdrawals << sidechain.bundle_retry_delay << sidechain.main_activation_height
+           << sidechain.pending_min_score << sidechain.unproposed_expiry_blocks;
     hasher << std::string{"Hivemind parameters"} << hm.period_seconds
            << hm.period_blocks << hm.start_time << hm.max_vote_periods << hm.max_periods_ahead << hm.max_rolls
            << hm.listing_fee << hm.alpha_num << hm.alpha_den << hm.tolerance << hm.max_market_decisions
@@ -111,7 +113,7 @@ int SidechainDB::BlocksLeft(const Bundle& bundle, int height, const Consensus::D
 bool SidechainDB::UpvoteExpired(const Bundle& bundle, int height, const Consensus::DrivechainParams& params)
 {
     // The blocks after the last upvote (or the proposal) and before this one did not upvote it.
-    return height >= params.audit2_height && int64_t{height} - 1 - bundle.last_upvote >= params.upvote_expiry_blocks;
+    return int64_t{height} - 1 - bundle.last_upvote >= params.upvote_expiry_blocks;
 }
 
 uint256 SidechainDB::GetHash() const
@@ -156,7 +158,6 @@ void SidechainDB::CloseBundle(SidechainId id, const Bundle& bundle, bool paid, i
 
 void SidechainDB::ForgetFailedBundles(int height, const Consensus::DrivechainParams& params, BlockUndo& undo)
 {
-    if (height < params.audit2_height) return;
     const auto forget{[&](FailedSet& failed, int window) {
         const int64_t last{int64_t{height} - std::max(1, window)};
         while (!failed.empty() && std::get<0>(*failed.begin()) <= last) {
@@ -268,11 +269,10 @@ bool SidechainDB::ConnectTx(const CTransaction& tx, const Consensus::DrivechainP
 
         CloseBundle(id, *bundle, /*paid=*/true, height, undo);
         EraseBundle(slot, id, bundle - slot.bundles.begin(), undo);
-        if (height >= params.single_payout_height) {
-            // The other bundles of the sidechain are copies holding the same withdrawals: they fail.
-            for (const Bundle& other : slot.bundles) CloseBundle(id, other, /*paid=*/false, height, undo);
-            for (size_t i{slot.bundles.size()}; i-- > 0;) EraseBundle(slot, id, i, undo);
-        }
+        // The other bundles of the sidechain are copies left by a reorg of the sidechain, holding the
+        // same withdrawals, which would otherwise be paid a second time: they fail.
+        for (const Bundle& other : slot.bundles) CloseBundle(id, other, /*paid=*/false, height, undo);
+        for (size_t i{slot.bundles.size()}; i-- > 0;) EraseBundle(slot, id, i, undo);
         destination = WITHDRAWAL_RETURN_DEST;
         paid_bundle = *blind_hash;
     } else {
@@ -478,7 +478,7 @@ bool SidechainDB::ConnectBlock(const CBlock& block, int height, const Consensus:
             // Blocks left before this one was connected.
             const int blocks_left{BlocksLeft(bundle, height, params) + 1};
             // Idle: nobody vouches for it (see DrivechainParams::idle_expiry_blocks).
-            const bool idle{height >= params.idle_expiry_height && bundle.score == 0 && Age(bundle.height, height) >= params.idle_expiry_blocks};
+            const bool idle{bundle.score == 0 && Age(bundle.height, height) >= params.idle_expiry_blocks};
             const bool expired{blocks_left <= 0 || idle || UpvoteExpired(bundle, height, params) ||
                                params.withdrawal_min_score - static_cast<int64_t>(bundle.score) > blocks_left};
             if (!expired) {

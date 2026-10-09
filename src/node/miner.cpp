@@ -196,9 +196,9 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock()
         if (!side->ApplyMainEvents(mainchain.Height(), mainchain, nHeight, side_params, side_outputs, reject_reason)) {
             throw std::runtime_error(strprintf("%s: the block does not fit the mainchain on record (%s)", __func__, reject_reason));
         }
-        main_pending = side->MainPending(mainchain, nHeight, side_params);
+        main_pending = side->MainPending(mainchain, side_params);
         std::vector<COutPoint> bundled;
-        const auto bundle{side->NextBundle(nHeight, pindexPrev->GetBlockHash(), side_params, &bundled, main_pending)};
+        const auto bundle{side->NextBundle(nHeight, pindexPrev->GetBlockHash(), side_params, &bundled)};
         // Not a bundle the mainchain has closed already: the block would be invalid. One proposed ahead
         // and still pending is fine, as in State::ConnectBlock (all closes on record are before the
         // next mainchain block, which commits to this one).
@@ -216,7 +216,7 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock()
             const bool refund_pending{!overdue && m_mempool && WITH_LOCK(m_mempool->cs, return std::any_of(bundled.begin(), bundled.end(), [&](const COutPoint& withdrawal) EXCLUSIVE_LOCKS_REQUIRED(m_mempool->cs) { return m_mempool->m_refunds.contains(withdrawal); }))};
             if (!refund_pending) {
                 bundle_hash = bundle->GetHash().ToUint256();
-                if (!side->StartBundle(*bundle_hash, nHeight, pindexPrev->GetBlockHash(), side_params, reject_reason, main_pending)) bundle_hash.reset();
+                if (!side->StartBundle(*bundle_hash, nHeight, pindexPrev->GetBlockHash(), side_params, reject_reason)) bundle_hash.reset();
             }
         }
         // A chunk goes in whole or not at all: on an overlay of its own, kept if every transaction of
@@ -271,7 +271,7 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock()
         const CTransactionRef& withdrawal{drivechain_additions.withdrawals[i]};
         // A withdrawal that does not fit waits for the next block.
         if (nBlockWeight + GetTransactionWeight(*withdrawal) >= *Assert(m_options.block_max_weight)) continue;
-        if (nBlockSigOpsCost + WITNESS_SCALE_FACTOR * GetLegacySigOpCount(*withdrawal) >= chainparams.GetConsensus().MaxBlockSigOpsCost(nHeight)) continue;
+        if (nBlockSigOpsCost + WITNESS_SCALE_FACTOR * GetLegacySigOpCount(*withdrawal) >= chainparams.GetConsensus().MaxBlockSigOpsCost()) continue;
         pblock->vtx.push_back(withdrawal);
         pblocktemplate->vTxFees.push_back(drivechain_additions.withdrawal_fees[i]);
         pblocktemplate->vTxSigOpsCost.push_back(WITNESS_SCALE_FACTOR * GetLegacySigOpCount(*withdrawal));
@@ -323,7 +323,7 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock()
             drop({pblock->vtx[i]->GetHash()});
         }
         // As many of the payouts owed as a block may pay; the rest wait for the next block.
-        side_outputs = side->TakePayouts(std::move(side_outputs), std::move(side_tx_outputs), nHeight >= side_params.audit2_height);
+        side_outputs = side->TakePayouts(std::move(side_outputs), std::move(side_tx_outputs));
         if (bundle_hash) side_outputs.emplace_back(0, sidechain::BundleCommitScript(*bundle_hash));
         m_chainstate.ReleaseSideCursor();
     }
@@ -429,7 +429,7 @@ bool BlockAssembler::TestChunkBlockLimits(int64_t chunk_weight, int64_t chunk_si
     if (nBlockWeight + chunk_weight >= m_options.block_max_weight) {
         return false;
     }
-    if (nBlockSigOpsCost + chunk_sigops_cost >= chainparams.GetConsensus().MaxBlockSigOpsCost(nHeight)) {
+    if (nBlockSigOpsCost + chunk_sigops_cost >= chainparams.GetConsensus().MaxBlockSigOpsCost()) {
         return false;
     }
     return true;
