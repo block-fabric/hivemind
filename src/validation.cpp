@@ -1107,6 +1107,19 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     // feerate later.
     if (!bypass_limits && !args.m_package_feerates && !CheckFeeRate(ws.m_vsize, ws.m_modified_fees, state)) return false;
 
+    // Relay policy, not consensus: a transaction pays for the payouts it would give rise to, as the
+    // markets stand at the tip, by its own fee (hivemind::PAYOUT_POLICY_VSIZE).
+    if (const Consensus::SidechainParams& side_params{m_active_chainstate.m_chainman.GetConsensus().sidechain};
+        side_params.enabled && !bypass_limits && m_pool.m_opts.require_standard &&
+        std::any_of(tx.vout.begin(), tx.vout.end(), [](const CTxOut& out) { return hivemind::IsActionScript(out.scriptPubKey); })) {
+        const size_t payouts{m_active_chainstate.SideState().Hivemind().PayoutsOf(tx, m_active_chainstate.m_chain.Height() + 1, side_params.hivemind)};
+        const CAmount needed{m_pool.m_opts.min_relay_feerate.GetFee(static_cast<int32_t>(payouts * hivemind::PAYOUT_POLICY_VSIZE))};
+        if (ws.m_modified_fees < needed) {
+            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "hm-payouts-too-dense",
+                                 strprintf("%u payouts need a fee of %d, not %d", payouts, needed, ws.m_modified_fees));
+        }
+    }
+
     ws.m_iters_conflicting = m_pool.GetIterSet(ws.m_conflicts);
 
     ws.m_parents = m_pool.GetParents(*ws.m_tx_handle);

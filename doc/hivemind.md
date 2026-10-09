@@ -58,6 +58,7 @@ checks every trade, every vote and every payout.
 | Kept of a refund, for the voters | 0.00001 | `REFUND_FEE` |
 | Kept of the proceeds of a sale and of change, for the voters | 0.00001 | `PAYOUT_FEE` |
 | Payouts the transactions of a block may give rise to | 250 | `MAX_TX_PAYOUTS_PER_BLOCK` |
+| Relay policy: least fee for each payout of a transaction | the minimum relay fee of 750 vbytes | `PAYOUT_POLICY_VSIZE` |
 | Least a sale leaves of a position, if anything | worth 0.001 | `MIN_POSITION` |
 | Least shares of a position, opened or left by a sale | 0.001 for each state of the market | `MinPositionShares` |
 | Least payout of a settlement, a sale, change or a refund (less goes to the voters) | 0.00001 | `MIN_PAYOUT` |
@@ -167,6 +168,25 @@ The rules of the audits apply from the genesis block on every network.
   block rather than on the transaction (which has 16 actions at most anyway):
   it is what makes room scarce, and miners give it to the transactions that
   pay the most for it. The shared queue code of the template is unchanged.
+- **The mempool makes payouts pay for their room** (relay policy, not
+  consensus). A transaction must pay at least the minimum relay fee of
+  `PAYOUT_POLICY_VSIZE` (750) vbytes for each payout it would give rise to, or
+  it is refused with `hm-payouts-too-dense`. The payouts are counted as
+  `ApplyTx` would add them on the state at the tip (`hivemind::State::PayoutsOf`):
+  proceeds, change, and refunds of what cannot be done; payouts under
+  `MIN_PAYOUT` are not counted (the voters get them). Without this, 16 refunded
+  purchases of a market that does not exist take 16 of a block's 250 for the
+  minimum fee of their 1350 vbytes (135 sat at the default 0.1 sat/vB); they
+  now have to pay 1200. A transaction the wallet makes is never refused: it
+  pays 1 sat/vB at least (`-mintxfee`, ten times the minimum relay fee), and
+  each action that pays out takes 77 vbytes or more, with at least 68 for the
+  rest of the transaction. That bounds the price: at 4000 vbytes a payout,
+  the 250 of a block would cost as much as a full block, but a one-payout
+  purchase of 190 vbytes made at 1 sat/vB would be refused. A transaction
+  sent by hand at the bare minimum relay fee pays the difference (75 sat a
+  payout). Fees given by `prioritisetransaction` count; transactions a reorg
+  brings back, and nodes with `-acceptnonstdtxn`, are not checked. A miner
+  may still mine any of them: blocks are checked by the consensus bound alone.
 - **Reputation is not split ever finer**. Every
   resolution reads every holding, and writes those that change. A transfer
   leaves each of its accounts with none or with at least
@@ -305,9 +325,10 @@ from `getmarket` for every market.
 | Market maker and vote resolution | `src/hivemind/math.{h,cpp}` |
 | Objects, script formats, rules | `src/hivemind/state.{h,cpp}` |
 | Hook into the sidechain rules | `sidechain::State` (`ApplyMainEvents`, `ApplyTx`) |
+| Mempool checks (`CheckTx`, payouts policy) | `MemPoolAccept::DrivechainChecks`, `PreChecks` (`src/validation.cpp`) |
 | Commands | `src/rpc/hivemind.cpp`, `src/wallet/rpc/hivemind.cpp` |
 | GUI | `src/qt/marketsdialog.{h,cpp}` |
-| Tests | `src/test/hivemind_tests.cpp`, `test/functional/feature_hivemind.py` |
+| Tests | `src/test/hivemind_tests.cpp`, `test/functional/feature_hivemind*.py` |
 
 ## What the references do differently
 

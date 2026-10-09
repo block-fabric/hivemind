@@ -618,6 +618,17 @@ bool State::ApplyTx(const CTransaction& tx, int height, const Consensus::Hivemin
     return true;
 }
 
+size_t State::PayoutsOf(const CTransaction& tx, int height, const Consensus::HivemindParams& params) const
+{
+    // Done on an overlay of its own, which is dropped. Alone, a transaction is never short of room
+    // for payouts: it has MAX_ACTIONS_PER_TX actions at most, each one payout at most.
+    sidechain::StoreOverlay scratch{*m_view, /*journal=*/false};
+    std::vector<CTxOut> payouts;
+    std::string reject_reason;
+    if (!State{scratch}.ApplyTxSteps(tx, height, params, payouts, reject_reason)) return MAX_TX_PAYOUTS_PER_BLOCK + 1;
+    return payouts.size();
+}
+
 bool State::ApplyTxSteps(const CTransaction& tx, int height, const Consensus::HivemindParams& params,
                          std::vector<CTxOut>& payouts, std::string& reject_reason)
 {

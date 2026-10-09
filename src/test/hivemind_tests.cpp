@@ -438,6 +438,37 @@ BOOST_AUTO_TEST_CASE(refunds_keep_a_fee)
     BOOST_CHECK_EQUAL(reason, "bad-hm-too-many-actions");
 }
 
+BOOST_AUTO_TEST_CASE(payouts_of_a_transaction)
+{
+    // What relay policy counts is what ApplyTx() adds, refunds included, and counting changes nothing.
+    Consensus::HivemindParams params;
+    params.period_blocks = 6;
+    TestMarkets markets;
+    hivemind::State& state{markets.state};
+    std::vector<CTxOut> payouts;
+    std::string reason;
+    state.BeginBlock(1, 0, params, payouts);
+    hivemind::BuyShares buy;
+    buy.market = uint256{0x99};
+    buy.shares = ONE;
+    CMutableTransaction many;
+    many.vin.resize(1);
+    many.vin[0].prevout = COutPoint{Txid::FromUint256(uint256{7}), 0};
+    for (size_t i{0}; i < hivemind::MAX_ACTIONS_PER_TX; ++i) many.vout.emplace_back(50000, hivemind::ActionScript(buy));
+    const CTransaction tx{many};
+    const CAmount pot{state.VoterPot()};
+    BOOST_CHECK_EQUAL(state.PayoutsOf(tx, 1, params), hivemind::MAX_ACTIONS_PER_TX);
+    BOOST_CHECK_EQUAL(state.VoterPot(), pot);
+    BOOST_REQUIRE(state.ApplyTx(tx, 1, params, payouts, reason));
+    BOOST_CHECK_EQUAL(payouts.size(), hivemind::MAX_ACTIONS_PER_TX);
+    // Counted on the state as it is: nothing is left of the first count.
+    BOOST_CHECK_EQUAL(state.PayoutsOf(tx, 1, params), hivemind::MAX_ACTIONS_PER_TX);
+    // A transfer of reputation pays nothing out.
+    hivemind::TransferReputation transfer;
+    transfer.amount = 1;
+    BOOST_CHECK_EQUAL(state.PayoutsOf(ActionTx(transfer, 0, 2), 1, params), 0U);
+}
+
 BOOST_AUTO_TEST_CASE(market_fee_counts_every_decision)
 {
     // The fee to open a market rises with the markets on any of its decisions, in any place, and

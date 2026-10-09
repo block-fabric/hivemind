@@ -114,6 +114,18 @@ inline constexpr CAmount PAYOUT_FEE{1000};
  * paid all the same.
  */
 inline constexpr size_t MAX_TX_PAYOUTS_PER_BLOCK{250};
+/**
+ * Relay policy, not consensus: a transaction pays at least the minimum relay fee of this many
+ * virtual bytes for each payout it would give rise to (PayoutsOf()), or the mempool refuses it
+ * ("hm-payouts-too-dense"). A payout takes one of the MAX_TX_PAYOUTS_PER_BLOCK of a block, which are
+ * scarcer than its weight: without this, a transaction of 16 refunded purchases takes 16 of the 250
+ * for the minimum fee of its 1350 vbytes, 135 sat at 0.1 sat/vB, and it now pays 1200. What a
+ * wallet makes is never refused: it pays 1 sat/vB at least (-mintxfee, ten times the minimum relay
+ * fee), and every action that pays out takes 77 vbytes or more, with 68 or more for the rest of the
+ * transaction. A payout cannot cost much more than that (the 4000 vbytes that would make the 250 of a
+ * block cost a full block) without refusing a one-payout purchase of 190 vbytes made at 1 sat/vB.
+ */
+inline constexpr int64_t PAYOUT_POLICY_VSIZE{750};
 /** Most actions in one transaction. */
 inline constexpr size_t MAX_ACTIONS_PER_TX{16};
 
@@ -490,6 +502,12 @@ public:
      */
     [[nodiscard]] bool ApplyTx(const CTransaction& tx, int height, const Consensus::HivemindParams& params,
                                std::vector<CTxOut>& payouts, std::string& reject_reason);
+    /**
+     * How many payouts ApplyTx() would add for a well formed transaction (CheckTx()) in a block at
+     * `height` on this state: change, proceeds and refunds of what cannot be done. Changes nothing.
+     * For relay policy (PAYOUT_POLICY_VSIZE).
+     */
+    size_t PayoutsOf(const CTransaction& tx, int height, const Consensus::HivemindParams& params) const;
 
     std::optional<Decision> GetDecision(const Id& id) const;
     std::optional<Market> GetMarket(const Id& id) const;
