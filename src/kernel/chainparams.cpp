@@ -345,7 +345,7 @@ public:
         };
 
         // Hivemind on the Chains testnet, in slot 9.
-        MakeSidechain({.slot = 9, .genesis_message = "Hivemind testnet", .genesis_time = 1790900000,
+        MakeSidechain({.slot = 9, .genesis_message = "Hivemind testnet", .genesis_time = 1791513292,
                        .message_start = {0x68, 0x76, 0x6d, 0x02}, .default_port = 19855, .bech32_hrp = "thm"});
         // The mainchain of the test network votes on a withdrawal bundle within 600 blocks.
         consensus.sidechain.bundle_retry_delay = 20;
@@ -357,7 +357,7 @@ public:
         // The test network ran without it until then; see SidechainParams.
         consensus.sidechain.single_bundle_height = 4200;
         // The height of the mainchain block that activated the slot; nothing is left out at 0.
-        consensus.sidechain.main_activation_height = 68;
+        consensus.sidechain.main_activation_height = 0; // set after the slot activates on the restarted test network
         consensus.sidechain.audit2_height = 3705; // audits 2-4 on the test network, a few blocks after the deploy
         // A tenth of the testnet mainchain's withdrawal_min_score (300); proposals within an hour.
         consensus.sidechain.pending_min_score = 30;
