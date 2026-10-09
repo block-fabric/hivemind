@@ -7,8 +7,8 @@
 // decisions resolve, markets settle and both are pruned, and now and then a jump of the clock over very
 // many periods. After every block: undone, the store is exactly what it was (through serialization of
 // the undo data too); a transaction that breaks a rule changes nothing and pays nothing; a signed action
-// repeated in another output is no action (from audit2_height); the transactions of a block pay out no
-// more than MAX_TX_PAYOUTS_PER_BLOCK (from audit2_height); every index is exactly what the tables imply;
+// repeated in another output is no action; the transactions of a block pay out no more than
+// MAX_TX_PAYOUTS_PER_BLOCK; every index is exactly what the tables imply;
 // and the reputation adds up to the supply.
 
 #include <common/signmessage.h>
@@ -53,7 +53,7 @@ Account AccountOf(const CKey& key) { return Account{key.GetPubKey().GetID()}; }
  * A transaction with one input of its own and the action; signed, if the action is, by `key`. With
  * `repeat`, the signed output is copied into a second one, as the one who spends the first input could.
  */
-CTransaction ActionTx(Action action, CAmount value, uint32_t salt, const CKey& key, const Consensus::HivemindParams& params, int height, bool repeat)
+CTransaction ActionTx(Action action, CAmount value, uint32_t salt, const CKey& key, const Consensus::HivemindParams& params, bool repeat)
 {
     CMutableTransaction tx;
     tx.vin.emplace_back(COutPoint{Txid::FromUint256(uint256{static_cast<uint8_t>(salt)}), salt});
@@ -61,7 +61,7 @@ CTransaction ActionTx(Action action, CAmount value, uint32_t salt, const CKey& k
     std::visit([&](auto& a) {
         if constexpr (requires { a.signature; }) {
             a.signature.clear();
-            const std::string message{ActionMessage(Action{a}, tx.vin[0].prevout, 0, ActionOutputsHash(tx.vout), params, height)};
+            const std::string message{ActionMessage(Action{a}, tx.vin[0].prevout, 0, ActionOutputsHash(tx.vout), params)};
             const bool ok{key.SignCompact(MessageHash(message), a.signature)};
             assert(ok);
         }
@@ -154,8 +154,6 @@ FUZZ_TARGET(hivemind_state, .init = initialize_hivemind)
     FuzzedDataProvider fdp{buffer.data(), buffer.size()};
     Consensus::HivemindParams params;
     params.period_blocks = fdp.ConsumeIntegralInRange<int>(3, 8);
-    params.audit_height = fdp.ConsumeIntegralInRange<int>(0, 40);
-    params.audit2_height = fdp.ConsumeIntegralInRange<int>(0, 60);
     params.genesis_hash = uint256{0x42};
     params.max_periods_ahead = 6;
     params.max_vote_periods = 3;
@@ -307,7 +305,7 @@ FUZZ_TARGET(hivemind_state, .init = initialize_hivemind)
             }
             if (!action) continue;
             const bool repeat{fdp.ConsumeIntegralInRange<int>(0, 7) == 0};
-            const CTransaction tx{ActionTx(*action, value, ++salt, g_keys[who], params, height, repeat)};
+            const CTransaction tx{ActionTx(*action, value, ++salt, g_keys[who], params, repeat)};
             const uint256 before_tx{sidechain::StoreHash(block)};
             const size_t paid{payouts.size()};
             std::string reason;
@@ -318,9 +316,9 @@ FUZZ_TARGET(hivemind_state, .init = initialize_hivemind)
                 assert(payouts.size() == paid);
             }
             // A signature is of its output alone.
-            if (repeat && IsSigned(*action) && height >= params.audit2_height) assert(!valid);
+            if (repeat && IsSigned(*action)) assert(!valid);
         }
-        if (height >= params.audit2_height) assert(payouts.size() <= MAX_TX_PAYOUTS_PER_BLOCK);
+        assert(payouts.size() <= MAX_TX_PAYOUTS_PER_BLOCK);
         const sidechain::StoreUndo undo{block.TakeUndo()};
         block.MergeInto(cache);
         CheckState(cache, params);

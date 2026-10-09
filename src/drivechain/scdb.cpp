@@ -39,17 +39,17 @@ uint256 ParamsFingerprint(const Consensus::DrivechainParams& params, const Conse
     // A chain that is no sidechain has nothing of it in the database.
     if (!sidechain.enabled) return ParamsFingerprint(params);
     // Every field: a parameter added later has to be added here as well.
-    static_assert(sizeof(Consensus::SidechainParams) == 216, "a new sidechain parameter goes into the fingerprint");
+    static_assert(sizeof(Consensus::SidechainParams) == 208, "a new sidechain parameter goes into the fingerprint");
     // The markets' parameters too: their state is in the store. genesis_hash is left out, being
     // the hash of the genesis block, which the database is of already.
-    static_assert(sizeof(Consensus::HivemindParams) == 168, "a new Hivemind parameter goes into the fingerprint");
+    static_assert(sizeof(Consensus::HivemindParams) == 160, "a new Hivemind parameter goes into the fingerprint");
     const Consensus::HivemindParams& hm{sidechain.hivemind};
     HashWriter hasher{};
     hasher << std::string{"Sidechain parameters"} << ParamsFingerprint(params) << sidechain.slot << sidechain.min_withdrawal
            << sidechain.max_bundle_withdrawals << sidechain.bundle_retry_delay << sidechain.single_bundle_height
            << sidechain.main_activation_height << sidechain.audit2_height << sidechain.pending_min_score
            << sidechain.unproposed_expiry_blocks;
-    hasher << std::string{"Hivemind parameters"} << hm.audit_height << hm.audit2_height << hm.period_seconds
+    hasher << std::string{"Hivemind parameters"} << hm.period_seconds
            << hm.period_blocks << hm.start_time << hm.max_vote_periods << hm.max_periods_ahead << hm.max_rolls
            << hm.listing_fee << hm.alpha_num << hm.alpha_den << hm.tolerance << hm.max_market_decisions
            << hm.min_liquidity << hm.max_fee_bps << hm.max_text_size << hm.genesis_account << hm.reputation_supply;

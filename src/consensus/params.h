@@ -86,38 +86,7 @@ struct BIP9Deployment {
 
 /** Parameters of the prediction markets. */
 struct HivemindParams {
-    /**
-     * From this height, the rules of the audit of October 2026, which keep the state from growing for
-     * free: a vote is sealed only by a holder of the reputation that counts in the resolution (at
-     * least reputation_supply / MAX_VOTERS); a purchase costs at least MIN_PURCHASE; payouts of
-     * settlements below MIN_PAYOUT go to the voters' pot instead of the payout queue.
-     */
-    int audit_height{0};
-    /**
-     * From this height, the rules of the second audit of October 2026:
-     *  - what settlements pay waits in the queue of payouts of transactions, not in that of the
-     *    deposits, which a settlement of many positions would otherwise hold back;
-     *  - a purchase that opens a position costs at least MIN_POSITION;
-     *  - a transfer of reputation leaves each of its accounts with none or with at least
-     *    reputation_supply / MAX_VOTERS, so that the reputation, which every resolution reads whole,
-     *    is held by a bounded number of accounts;
-     *  - ballots (SealBallot, RevealBallot): the votes of a voter on many decisions in one action;
-     *  - signed actions name the chain (genesis_hash) and their kind, their output and the outputs
-     *    of their transaction;
-     *  - proceeds of sales and coins given back below MIN_PAYOUT go to the voters' pot;
-     *  - and, from the third audit: the proceeds of a sale and change pay PAYOUT_FEE to the voters;
-     *    the transactions of a block give rise to at most MAX_TX_PAYOUTS_PER_BLOCK payouts; a sale
-     *    leaves no shares or shares worth MIN_POSITION; holdings of reputation that stay below a
-     *    voter's own through a resolution are folded into the voters';
-     *  - and, from the fourth audit: the refunds of withdrawals a transaction asks for count
-     *    against MAX_TX_PAYOUTS_PER_BLOCK; a position holds at least MinPositionShares(), when it is
-     *    opened and when a sale leaves some; a sale or a transfer that would leave less than its
-     *    least moves the whole holding, and a whole holding of reputation moves wherever it goes; an
-     *    account that sealed votes is not emptied by a transfer until the period they close in is over.
-     * On the test network audit_height is the same height: ballots need the first audit's rules.
-     */
-    int audit2_height{0};
-    /** The hash of the genesis block, which signed actions name from audit2_height. */
+    /** The hash of the genesis block, which signed actions name. */
     uint256 genesis_hash;
     /** Length of a voting period in seconds of mainchain time. */
     int64_t period_seconds{86400};

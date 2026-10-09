@@ -406,7 +406,6 @@ void Chainstate::MaybeUpdateMempoolForReorg(
     m_mempool->removeForReorg(m_chain, filter_final_and_mature);
     // And the ones the drivechain rules no longer allow on top of the new tip.
     RemoveStaleDrivechainTxs();
-    RemoveStaleHivemindTxs();
     // Re-limit mempool size, in case we added any transactions
     LimitMempoolSize(*m_mempool, this->CoinsTip());
 }
@@ -805,7 +804,7 @@ bool MemPoolAccept::DrivechainChecks(Workspace& ws)
     if (const Consensus::SidechainParams& side_params{m_active_chainstate.m_chainman.GetConsensus().sidechain}; side_params.enabled) {
         const sidechain::State side{m_active_chainstate.SideState()};
         // What a transaction asks of the markets has to be well formed and signed.
-        if (std::string reject_reason; !hivemind::CheckTx(tx, m_active_chainstate.m_chain.Height() + 1, side_params.hivemind, reject_reason)) {
+        if (std::string reject_reason; !hivemind::CheckTx(tx, side_params.hivemind, reject_reason)) {
             return ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, reject_reason);
         }
         for (const CTxOut& out : tx.vout) {
@@ -3485,7 +3484,6 @@ bool Chainstate::ConnectTip(
     }
     UpdateTip(pindexNew);
     RemoveStaleDrivechainTxs();
-    RemoveStaleHivemindTxs();
 
     const auto time_6{SteadyClock::now()};
     m_chainman.time_post_connect += time_6 - time_5;
@@ -5218,30 +5216,6 @@ void Chainstate::RemoveStaleDrivechainTxs()
     }
 
     for (const CTransactionRef& tx : stale) {
-        m_mempool->removeRecursive(*tx, MemPoolRemovalReason::CONFLICT);
-    }
-}
-
-void Chainstate::RemoveStaleHivemindTxs()
-{
-    AssertLockHeld(::cs_main);
-    if (!m_mempool) return;
-    AssertLockHeld(m_mempool->cs);
-    const Consensus::SidechainParams& params{m_chainman.GetConsensus().sidechain};
-    const CBlockIndex* tip{m_chain.Tip()};
-    if (!params.enabled || !tip) return;
-    const int next{tip->nHeight + 1};
-    const bool audit2{next >= params.hivemind.audit2_height};
-    if (m_hivemind_audit2_checked == audit2) return;
-    m_hivemind_audit2_checked = audit2;
-    std::vector<CTransactionRef> stale;
-    for (const CTxMemPoolEntryRef& entry : m_mempool->entryAll()) {
-        const CTransaction& tx{entry.get().GetTx()};
-        if (std::none_of(tx.vout.begin(), tx.vout.end(), [](const CTxOut& out) { return hivemind::IsActionScript(out.scriptPubKey); })) continue;
-        if (std::string reject_reason; !hivemind::CheckTx(tx, next, params.hivemind, reject_reason)) stale.push_back(entry.get().GetSharedTx());
-    }
-    for (const CTransactionRef& tx : stale) {
-        LogInfo("Removing %s from the mempool: the rules of the next block no longer take its Hivemind requests", tx->GetHash().ToString());
         m_mempool->removeRecursive(*tx, MemPoolRemovalReason::CONFLICT);
     }
 }

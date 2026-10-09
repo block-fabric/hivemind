@@ -312,16 +312,12 @@ bool State::ApplyMainEvents(int main_height, const Mainchain& mainchain, int hei
     const auto main_block{mainchain.GetBlock(main_height)};
     std::vector<CTxOut> settled;
     hivemind::State{Writable()}.BeginBlock(height, main_block ? main_block->time : 0, params.hivemind, settled);
-    if (height < params.hivemind.audit2_height) {
-        payouts.insert(payouts.end(), settled.begin(), settled.end());
-    } else {
-        // What the markets pay is of transactions, and waits with what they gave rise to: in the
-        // queue of deposits, a settlement of many positions would hold every deposit back. Ahead of
-        // what the transactions of this block give rise to, as it comes before them.
-        QueueEnds ends{TX_QUEUE_ENDS.Get(*m_view)};
-        for (const CTxOut& o : settled) TX_QUEUE.Put(Writable(), ends.tail++, o);
-        if (!settled.empty()) TX_QUEUE_ENDS.Put(Writable(), ends);
-    }
+    // What the markets pay is of transactions, and waits with what they gave rise to: in the
+    // queue of deposits, a settlement of many positions would hold every deposit back. Ahead of
+    // what the transactions of this block give rise to, as it comes before them.
+    QueueEnds ends{TX_QUEUE_ENDS.Get(*m_view)};
+    for (const CTxOut& o : settled) TX_QUEUE.Put(Writable(), ends.tail++, o);
+    if (!settled.empty()) TX_QUEUE_ENDS.Put(Writable(), ends);
     return true;
 }
 
@@ -491,10 +487,10 @@ bool State::ApplyTxSteps(const CTransaction& tx, int height, const Consensus::Si
     // The markets: a transaction that is not well formed is invalid.
     if (!hivemind::State{Writable()}.ApplyTx(tx, height, params.hivemind, payouts, reject_reason)) return false;
     payouts.insert(payouts.end(), refunds.begin(), refunds.end());
-    // Refunds are payouts of the block's transactions too (from the markets' audit2_height): they count
+    // Refunds are payouts of the block's transactions too: they count
     // against the same bound, or one block could put thousands in the queue for free. ApplyTx() drops
     // what the transaction did, and the miner leaves it for a later block.
-    if (!refunds.empty() && height >= params.hivemind.audit2_height && payouts.size() > hivemind::MAX_TX_PAYOUTS_PER_BLOCK) {
+    if (!refunds.empty() && payouts.size() > hivemind::MAX_TX_PAYOUTS_PER_BLOCK) {
         reject_reason = "hm-block-payouts-full";
         return false;
     }
@@ -569,7 +565,7 @@ bool RecordIndependent(const std::string& reject_reason)
     // What a block breaks whatever the mainchain did: the form of its withdrawals and commitments,
     // and the signatures of refunds (checked once the withdrawal is known and free); and the form and
     // signatures of what transactions ask of the markets (hivemind::CheckTx), which depend on the
-    // transaction and the height alone.
+    // transaction alone.
     static const std::set<std::string> independent{
         "bad-sc-withdrawal", "bad-sc-withdrawal-amount", "bad-sc-refund-signature", "bad-sc-bundle-multiple",
         "bad-hm-too-many-actions", "bad-hm-format", "bad-hm-coinbase", "bad-hm-text", "bad-hm-vote-periods",

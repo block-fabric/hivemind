@@ -72,18 +72,7 @@ in `src/kernel/chainparams.cpp`. **The main network has no genesis account
 yet**; one has to be set before launch, and whoever holds its key decides
 every outcome until the reputation is spread.
 
-The rules of the audits start at heights of their own: `audit_height` and
-`audit2_height` (from the start on the main network, signet and regtest; on
-testnet, which ran without them, both at the same height, set when the
-release is deployed: between the two, ballots, which are of the second
-audit's rules, would have been open to accounts without reputation). The
-rules of the third audit are part of `audit2_height`'s. On regtest,
-`-hivemindaudit2height=<n>` starts both at height `n`, to test the change.
-
-When the tip reaches the height before `audit2_height` (or goes back below
-it), the transactions of the mempool whose requests the next block's rules
-no longer take -- signed in the old form, say -- are removed from it: they
-could never be mined.
+The rules of the audits apply from the genesis block on every network.
 
 ## Design choices
 
@@ -114,7 +103,7 @@ could never be mined.
   refunds that cost nothing could be made by the thousand to hold back
   everyone else's. Sales, transfers, sealed votes and ballots are signed by
   their account; the signature names the first input of the transaction, so it
-  cannot be replayed, and (from `audit2_height`) the chain -- the hash of its
+  cannot be replayed, and the chain -- the hash of its
   genesis block, `genesis_hash` -- and the kind of action, so that it means
   nothing on another chain made of this code that shares an output with this
   one; and the output of the action and the outputs of the transaction, so
@@ -126,21 +115,19 @@ could never be mined.
   `outputs` is `H("Hivemind outputs", the outputs, each action without its
   signature)` (`ActionOutputsHash`): the wallet makes the transaction with
   room for the signatures and signs it last (so a fee bump, which changes the
-  change output, would need new signatures). Before the height it was
-  `"Hivemind " + hex(H(first input, action script))`, which is still what is
-  checked below it.
+  change output, would need new signatures).
 - **The markets are kept on the store of the sidechain state**, one entry per
   key (decisions, markets, positions, votes, reputation), with indexes so that
   no rule reads a table whole: open and resolved decisions by the period their
   vote closes in, markets by each of their decisions, settled markets by the
   period they settled in. A block's changes, the earlier value of each entry
   it touched, are its undo data, as for the rest of the sidechain state.
-- **The state does not grow for free** (from `audit_height`): a purchase costs
+- **The state does not grow for free**: a purchase costs
   at least `MIN_PURCHASE`; a vote is sealed only by an account holding the
   reputation that counts as a voter of its own in the resolution; a settlement
   payout below `MIN_PAYOUT` goes to the voters' pot rather than taking room in
   the coinbase.
-- **Payouts do not hold back deposits** (from `audit2_height`). What a
+- **Payouts do not hold back deposits**. What a
   settlement pays waits in the queue of payouts of transactions, with refunds,
   change and sale proceeds, not in that of the deposits from the mainchain.
   Positions are open to anyone who names an account (a purchase need not be
@@ -166,7 +153,7 @@ could never be mined.
   account was considered and not done: keys are free, so it would bound nothing,
   and it would cost 65 bytes and a signature check per purchase. Dust (below
   `MIN_PAYOUT`) of sales, change and refunds goes to the voters' pot.
-- **Payouts of transactions are scarce** (from `audit2_height`). Each sale,
+- **Payouts of transactions are scarce**. Each sale,
   and the change of a purchase or of the opening of a market, is a payout of
   the coinbase: they pay `PAYOUT_FEE` to the voters' pot, as a refund pays
   `REFUND_FEE`. And the transactions of a block give rise to at most
@@ -180,7 +167,7 @@ could never be mined.
   block rather than on the transaction (which has 16 actions at most anyway):
   it is what makes room scarce, and miners give it to the transactions that
   pay the most for it. The shared queue code of the template is unchanged.
-- **Reputation is not split ever finer** (from `audit2_height`). Every
+- **Reputation is not split ever finer**. Every
   resolution reads every holding, and writes those that change. A transfer
   leaves each of its accounts with none or with at least
   `reputation_supply / MAX_VOTERS`, so at most about `MAX_VOTERS` (10 000)
@@ -195,8 +182,7 @@ could never be mined.
   below that size before a resolution and after it is folded into the holdings
   of those who voted (if nobody did, of the holders of at least that size), by
   what they come out with. A holding that falls below has a period to be moved
-  whole into another account or made up again; holdings made below the size
-  before `audit2_height` go at the first resolution from then on. So the
+  whole into another account or made up again. So the
   holdings are about `MAX_VOTERS` at most, plus those made since the last
   resolution. Holdings that a resolution does not change are not rewritten,
   nor noted in the undo data. `gethivemindinfo` counts the holders without
@@ -204,7 +190,7 @@ could never be mined.
   wallet's own holdings come from `getwalletreputation` in one call (the
   Markets tab shows the 200 largest and asks the wallet once per refresh, not
   about every account).
-- **Ballots** (from `audit2_height`). `SealBallot` seals a voter's votes on up
+- **Ballots**. `SealBallot` seals a voter's votes on up
   to 100 decisions that close in the same period, with one commitment
   (`BallotCommitment`: voter, period, decisions, answers, salt) and one
   signature; `RevealBallot` gives the answers and the salt, without repeating
@@ -236,8 +222,7 @@ could never be mined.
 - **Reputation does not move while votes are revealed** (the last third of a
   period): a transfer mined then is ignored. Otherwise a holder could put the
   reputation behind whichever revealed vote turned out best.
-- **One stake seals the votes of one account at a time** (from
-  `audit2_height`). A seal (or ballot) needs a voter's own holding, and costs
+- **One stake seals the votes of one account at a time**. A seal (or ballot) needs a voter's own holding, and costs
   every node a row; but a holding moved on, in the same block, to another
   account that seals and moves it on again would seal the votes of any number
   of accounts. So an account that sealed votes is not emptied by a transfer

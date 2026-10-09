@@ -2662,9 +2662,7 @@ BOOST_AUTO_TEST_CASE(database_params_fingerprint)
     BOOST_CHECK(side_changed([](auto& p) { ++p.pending_min_score; }) != side_fingerprint);
     BOOST_CHECK(side_changed([](auto& p) { ++p.unproposed_expiry_blocks; }) != side_fingerprint);
     BOOST_CHECK(side_changed([](auto& p) { ++p.main_activation_height; }) != side_fingerprint);
-    // Hivemind: the markets' rules, their activation heights and periods.
-    BOOST_CHECK(side_changed([](auto& p) { ++p.hivemind.audit_height; }) != side_fingerprint);
-    BOOST_CHECK(side_changed([](auto& p) { ++p.hivemind.audit2_height; }) != side_fingerprint);
+    // Hivemind: the markets' rules and periods.
     BOOST_CHECK(side_changed([](auto& p) { ++p.hivemind.period_seconds; }) != side_fingerprint);
     BOOST_CHECK(side_changed([](auto& p) { ++p.hivemind.period_blocks; }) != side_fingerprint);
     BOOST_CHECK(side_changed([](auto& p) { ++p.hivemind.start_time; }) != side_fingerprint);

@@ -80,18 +80,18 @@ inline constexpr int64_t QUORUM_PERCENT{20};
 /** Least amount a purchase of shares may pay: what cannot be bought is given back, and payouts are not free. */
 inline constexpr CAmount MIN_PURCHASE{10000};
 /**
- * Settlement payouts below this go to the voters' pot (from audit_height), and so do the proceeds of a
- * sale and coins given back (from audit2_height): a payout costs every node.
+ * Settlement payouts below this go to the voters' pot, and so do the proceeds of a sale and coins
+ * given back: a payout costs every node.
  */
 inline constexpr CAmount MIN_PAYOUT{1000};
 /**
- * Least amount a purchase that opens a position pays (from audit2_height). Every position is a payout
+ * Least amount a purchase that opens a position pays. Every position is a payout
  * when its market settles; a position is open to anyone who names an account, so what bounds their
  * number is the coins each has to hold until then.
  */
 inline constexpr CAmount MIN_POSITION{100000};
 /**
- * Least shares a position of a market of `states` states holds (from audit2_height), when it is opened
+ * Least shares a position of a market of `states` states holds, when it is opened
  * and when a sale leaves some: MIN_POSITION for each state. A share of a state pays 1/states of a coin
  * when the market settles at even odds, so a position then pays at least MIN_POSITION, and the payouts
  * of a market are bounded by its treasury over MIN_POSITION -- not `states` times more, as positions
@@ -102,12 +102,12 @@ inline constexpr int64_t MinPositionShares(size_t states) { return MIN_POSITION 
 inline constexpr CAmount REFUND_FEE{1000};
 /**
  * What is kept, for the voters, of the proceeds of a sale and of the change of a purchase or of the
- * opening of a market (from audit2_height): each is a payout, which costs every node and takes room
+ * opening of a market: each is a payout, which costs every node and takes room
  * in a block, as a refund does.
  */
 inline constexpr CAmount PAYOUT_FEE{1000};
 /**
- * Most payouts the transactions of a block may give rise to (from audit2_height); a transaction that
+ * Most payouts the transactions of a block may give rise to; a transaction that
  * would go beyond is not valid in that block, and waits for the next. A quarter of what a block pays
  * (sidechain::MAX_PAYOUTS_PER_BLOCK), and half of what the queue of payouts of transactions is sure to
  * get of a block: transactions alone cannot make that queue grow, and what settlements put in it is
@@ -221,7 +221,7 @@ struct RevealVote {
 inline constexpr int64_t ANSWER_UNKNOWN{std::numeric_limits<int64_t>::min()};
 
 /**
- * Seal votes on several decisions at once (from audit2_height): one commitment, one signature, so that
+ * Seal votes on several decisions at once: one commitment, one signature, so that
  * a voter's votes on all the decisions closing in a period take little room. Signed by the voter. The
  * decisions are those whose vote closes in `close_period`; a later ballot of the voter for that
  * period replaces this one, and a seal of a single vote replaces it for that decision.
@@ -261,16 +261,16 @@ bool IsActionScript(const CScript& script);
 std::optional<Action> ParseActionScript(const CScript& script);
 
 /**
- * The message an account signs to authorise the action of output `n` of a transaction, in a block at
- * `height`. It names the first input of the transaction, which can be spent only once, so that the
- * signature is of no use in another transaction; and, from audit2_height, the chain (its genesis
+ * The message an account signs to authorise the action of output `n` of a transaction. It names the
+ * first input of the transaction, which can be spent only once, so that the signature is of no use
+ * in another transaction; the chain (its genesis
  * block) and the kind of action, so that it is of no use on another chain that shares an output with
  * this one, or as another action; and the place of the action and the outputs of the transaction
  * (`outputs_hash`, ActionOutputsHash()), so that it cannot be repeated in other outputs of the same
  * transaction, nor put in one that pays otherwise than the signer agreed to.
  */
 std::string ActionMessage(const Action& action, const COutPoint& first_input, uint32_t n, const uint256& outputs_hash,
-                          const Consensus::HivemindParams& params, int height);
+                          const Consensus::HivemindParams& params);
 /** The outputs of a transaction as signed actions name them: the signatures of actions left out, as they cannot sign themselves. */
 uint256 ActionOutputsHash(const std::vector<CTxOut>& outputs);
 /** What a sealed vote commits to. It names the voter, so that nobody can seal someone else's vote as their own. */
@@ -485,7 +485,7 @@ public:
      * Do what the outputs of a transaction ask for. What cannot be done is
      * left undone, and the coins burned for it are paid back.
      * @return false, and nothing done, if the transaction is not well formed (see CheckTx()), or
-     *         (from audit2_height) if it would take the payouts of the block's transactions, those
+     *         if it would take the payouts of the block's transactions, those
      *         in `payouts`, beyond MAX_TX_PAYOUTS_PER_BLOCK.
      */
     [[nodiscard]] bool ApplyTx(const CTransaction& tx, int height, const Consensus::HivemindParams& params,
@@ -500,7 +500,7 @@ public:
     /** The reputation an account holds (0 if none). */
     int64_t ReputationOf(const Account& account) const;
     /**
-     * The last period whose votes the account sealed votes for (from audit2_height), if that period
+     * The last period whose votes the account sealed votes for, if that period
      * is not over: until it is, the account's holding is not emptied by a transfer, so that one stake
      * seals the votes of one account at a time, not of every account it is moved through.
      */
@@ -527,18 +527,18 @@ public:
     /** Why Quote() has no price for this trade, in words for the one who wanted it; empty if it has one. */
     std::string WhyNoTrade(const Id& market, uint8_t state, int64_t shares) const;
     /**
-     * Why a sale of `shares` of a position would not be made in a block at `height`, beyond what
-     * WhyNoTrade() says: the account does not hold as many, or (from audit2_height) what it would
+     * Why a sale of `shares` of a position would not be made in the next block, beyond what
+     * WhyNoTrade() says: the account does not hold as many, or what it would
      * keep is worth less than MIN_POSITION or fewer shares than MinPositionShares(). Empty if it would
      * be made, as the state stands.
      */
-    std::string WhyNoSale(const PositionKey& key, int64_t shares, int height, const Consensus::HivemindParams& params) const;
+    std::string WhyNoSale(const PositionKey& key, int64_t shares) const;
     /**
-     * Why a purchase of `shares` for a position would be refunded in a block at `height`, beyond what
-     * WhyNoTrade() says: (from audit2_height) the position it opens costs less than MIN_POSITION, or it
+     * Why a purchase of `shares` for a position would be refunded in the next block, beyond what
+     * WhyNoTrade() says: the position it opens costs less than MIN_POSITION, or it
      * leaves the position with fewer than MinPositionShares(). Empty if it would be made, as the state stands.
      */
-    std::string WhyNoPurchase(const PositionKey& key, int64_t shares, int height, const Consensus::HivemindParams& params) const;
+    std::string WhyNoPurchase(const PositionKey& key, int64_t shares) const;
     /** Whether a market can be traded in now. */
     bool TradingOpen(const Market& market) const;
     /**
@@ -568,7 +568,7 @@ private:
      * Resolve the decisions whose vote closed before `new_period`. A decision voted on again is
      * voted on from `first_open` at the earliest: the first period that still has a time for sealing.
      */
-    void Resolve(uint32_t new_period, uint32_t first_open, const Consensus::HivemindParams& params, std::map<Account, CAmount>& paid, bool audit2);
+    void Resolve(uint32_t new_period, uint32_t first_open, const Consensus::HivemindParams& params, std::map<Account, CAmount>& paid);
     /** The period in which the vote on the first open decision to close closes, if there is one. */
     std::optional<uint32_t> FirstClose() const;
     void Settle(const Id& id, Market& market, std::map<Account, CAmount>& paid);
@@ -591,10 +591,9 @@ private:
 
 /**
  * Whether the requests among the outputs of a transaction are well formed and,
- * where needed, signed, in a block at `height`. This depends on the transaction
- * and the height alone.
+ * where needed, signed. This depends on the transaction alone.
  */
-[[nodiscard]] bool CheckTx(const CTransaction& tx, int height, const Consensus::HivemindParams& params, std::string& reject_reason);
+[[nodiscard]] bool CheckTx(const CTransaction& tx, const Consensus::HivemindParams& params, std::string& reject_reason);
 
 /** The trading fee on `amount` at `fee_bps` hundredths of a percent, rounded up; in 128 bits, so that no rate overflows. */
 CAmount TradeFee(CAmount amount, uint16_t fee_bps);

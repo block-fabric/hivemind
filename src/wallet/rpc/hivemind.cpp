@@ -92,13 +92,11 @@ std::pair<CTransactionRef, uint32_t> SendAction(CWallet& wallet, T action, CAmou
     CHECK_NONFATAL(index < mtx.vout.size());
     if constexpr (requires { action.signature; }) {
         action.signature.clear();
-        // Signed for the next block, which is where the transaction goes: the message names the chain,
-        // the output and the outputs of the transaction from audit2_height. The placeholder has the
-        // size of the signature, so that the fee is right, and is left out of what is signed, as the
-        // signature will be.
-        const int next_height{wallet.chain().getHeight().value_or(-1) + 1};
+        // The message names the chain, the output and the outputs of the transaction. The placeholder
+        // has the size of the signature, so that the fee is right, and is left out of what is signed,
+        // as the signature will be.
         action.signature = Sign(wallet, hivemind::ActionMessage(Action{action}, mtx.vin[0].prevout, index, hivemind::ActionOutputsHash(mtx.vout),
-                                                                wallet.chain().getHivemindParams(), next_height), *Assert(signer));
+                                                                wallet.chain().getHivemindParams()), *Assert(signer));
         mtx.vout[index].scriptPubKey = script_of();
     }
     if (!wallet.SignTransaction(mtx)) throw JSONRPCError(RPC_WALLET_ERROR, "Signing the transaction failed");
@@ -412,13 +410,11 @@ RPCMethod sellshares()
     if (const std::string why{pwallet->chain().whyNoMarketSale(sell.market, sell.account, sell.state, sell.shares)}; !why.empty()) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, why);
     }
-    // From audit2_height a payout keeps PAYOUT_FEE for the voters: the least to get is of what is paid.
-    const auto params{pwallet->chain().getHivemindParams()};
-    const bool audit2{pwallet->chain().getHeight().value_or(-1) + 1 >= params.audit2_height};
+    // A payout keeps PAYOUT_FEE for the voters: the least to get is of what is paid.
     const CAmount quoted{-*quote};
     if (quoted <= 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "Selling these shares would bring nothing");
     // Less than the fee: the sale closes the position and pays nothing out.
-    const CAmount proceeds{std::max<CAmount>(0, quoted - (audit2 ? hivemind::PAYOUT_FEE : 0))};
+    const CAmount proceeds{std::max<CAmount>(0, quoted - hivemind::PAYOUT_FEE)};
     sell.min_proceeds = request.params[4].isNull() ? proceeds - proceeds / 100 : AmountFromValue(request.params[4]);
     const auto [tx, index]{SendAction(*pwallet, sell, 0, sell.account)};
     UniValue result(UniValue::VOBJ);
