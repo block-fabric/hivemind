@@ -125,13 +125,6 @@ uint256 VoteSaltOf(CWallet& wallet, const Account& voter, const hivemind::Id& de
     return Hash(signature);
 }
 
-/** The salt of a round as wallets made it before the period was part of it. */
-uint256 LegacyVoteSalt(CWallet& wallet, const Account& voter, const hivemind::Id& decision, unsigned round)
-{
-    const std::vector<unsigned char> signature{Sign(wallet, strprintf("Hivemind vote salt %s round %u", decision.GetHex(), round), voter)};
-    return Hash(signature);
-}
-
 uint256 VoteSalt(CWallet& wallet, const Account& voter, const hivemind::Id& decision)
 {
     const auto rolls{wallet.chain().getDecisionRolls(decision)};
@@ -144,14 +137,13 @@ uint256 VoteSalt(CWallet& wallet, const Account& voter, const hivemind::Id& deci
 constexpr uint32_t SALT_SEARCH_PERIODS{1000};
 
 /**
- * The salt a sealed vote of a round was made with, if the wallet made it: for the period the decision
- * closes in now, as an older wallet made it, or for an earlier period (the decision was moved since).
+ * The salt a sealed vote of a round was made with, if the wallet made it for an earlier period than
+ * the one the decision closes in now (the decision was moved since).
  */
 std::optional<uint256> FindVoteSalt(CWallet& wallet, const Account& voter, const hivemind::Id& decision, unsigned round,
                                     uint32_t close_period, int64_t answer, const uint256& commitment)
 {
     const auto opens{[&](const uint256& salt) { return hivemind::VoteCommitment(decision, voter, answer, salt) == commitment; }};
-    if (const uint256 salt{LegacyVoteSalt(wallet, voter, decision, round)}; opens(salt)) return salt;
     for (uint32_t period{close_period}; period-- > 0 && close_period - period <= SALT_SEARCH_PERIODS;) {
         if (const uint256 salt{VoteSaltOf(wallet, voter, decision, round, period)}; opens(salt)) return salt;
     }
@@ -549,8 +541,8 @@ RPCMethod revealvote()
     if (!rolls || !close_period) throw JSONRPCError(RPC_INVALID_PARAMETER, "No open decision with this hash");
     reveal.salt = VoteSaltOf(*pwallet, reveal.voter, reveal.decision, *rolls, *close_period);
     if (hivemind::VoteCommitment(reveal.decision, reveal.voter, reveal.answer, reveal.salt) != *commitment) {
-        // Sealed in this round, by an older wallet or for the period the decision closed in before it
-        // was moved: what the vote was sealed with opens it.
+        // Sealed in this round for the period the decision closed in before it was moved: what the
+        // vote was sealed with opens it.
         if (const auto salt{FindVoteSalt(*pwallet, reveal.voter, reveal.decision, *rolls, *close_period, reveal.answer, *commitment)}) {
             reveal.salt = *salt;
         } else if (*rolls > 0 && FindVoteSalt(*pwallet, reveal.voter, reveal.decision, *rolls - 1, *close_period, reveal.answer, *commitment)) {
