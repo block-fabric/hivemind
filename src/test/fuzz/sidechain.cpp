@@ -138,27 +138,19 @@ FUZZ_TARGET(sidechain_state, .init = initialize_sidechain)
             const bool supported{std::any_of(last.pending.begin(), last.pending.end(), [&](const sidechain::MainPendingBundle& b) {
                 return b.score >= params.pending_min_score && (!ours || b.hash != ours->hash);
             })};
-            // Or the one leader of the slot (no tie), not ours, whose score rose by
-            // PENDING_TREND_MIN_RISE over the last PENDING_TREND_BLOCKS blocks (from 1 if it was not
-            // pending then).
+            // Or the one bundle that leads the slot (no tie), not this chain's own, with a score up by
+            // PENDING_TREND_MIN_RISE over the last PENDING_TREND_BLOCKS mainchain blocks (from 1 if
+            // it was not pending then), whatever its score.
             bool rising{false};
-            const sidechain::MainPendingBundle* leader{nullptr};
-            bool tie{false};
-            for (const auto& b : last.pending) {
-                if (!leader || b.score > leader->score) {
-                    leader = &b;
-                    tie = false;
-                } else if (b.score == leader->score) {
-                    tie = true;
-                }
-            }
-            if (leader && !tie && (!ours || leader->hash != ours->hash)) {
+            if (const auto top{std::max_element(last.pending.begin(), last.pending.end(), [](const auto& a, const auto& b) { return a.score < b.score; })};
+                top != last.pending.end() && std::count_if(last.pending.begin(), last.pending.end(), [&](const auto& b) { return b.score == top->score; }) == 1 &&
+                (!ours || top->hash != ours->hash)) {
+                uint32_t then{1};
                 const auto earlier{*mainchain.GetBlock(std::max(state.MainHeight() - sidechain::PENDING_TREND_BLOCKS, 0))};
-                uint32_t before{1};
                 for (const auto& b : earlier.pending) {
-                    if (b.hash == leader->hash) before = b.score;
+                    if (b.hash == top->hash) then = b.score;
                 }
-                rising = leader->score >= before + sidechain::PENDING_TREND_MIN_RISE;
+                rising = top->score >= then + sidechain::PENDING_TREND_MIN_RISE;
             }
             assert(main_pending == (supported || rising));
             // A bundle left pending is one the mainchain proposed in time, or that is still in time.
