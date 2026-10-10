@@ -22,6 +22,7 @@ public:
 
 private Q_SLOTS:
     void marketsTests();
+    void scaledMarketsTests();
     void timedMarketsTests();
     void noMarketsTests();
     void nodeRpcTests();

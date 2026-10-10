@@ -664,6 +664,9 @@ void TestNodeRpc(interfaces::Node& node)
     QTRY_VERIFY_WITH_TIMEOUT(done, 10000);
     QVERIFY(!result);
     QCOMPARE(error, QString{"Block height out of range"});
+    // A call with the wrong number of arguments: its help, as the message.
+    QVERIFY(!NodeRpc::Call(&client_model, "getblockcount", NodeRpc::Args({1}), error));
+    QVERIFY2(error.startsWith("getblockcount\n"), qPrintable(error));
     // A receiver gone before the call is done hears nothing of it.
     bool heard{false};
     auto* gone{new QObject};
@@ -691,6 +694,201 @@ void TestNodeRpc(interfaces::Node& node)
     QCOMPARE(NodeRpc::Text(UniValue{42}), QString{"42"});
     std::unique_ptr<QTableWidgetItem> item{NodeRpc::Item("cell")};
     QVERIFY(!(item->flags() & Qt::ItemIsEditable));
+}
+
+/**
+ * Markets on a scale and on two decisions, a vote on a scale, and what the page says when an order
+ * cannot be quoted, a wallet without reputation votes, or the market shown goes with a reorg.
+ */
+void TestScaledMarketsPage(interfaces::Node& node)
+{
+    TestingSetup test{ChainType::REGTEST, {.extra_args = {"-sidechainslot=9"}}};
+    auto wallet_loader = interfaces::MakeWalletLoader(*test.m_node.chain, *Assert(test.m_node.args));
+    test.m_node.wallet_loader = wallet_loader.get();
+    node.setContext(&test.m_node);
+    wallet_loader->registerRpcs();
+    if (RPCIsInWarmup(nullptr)) SetRPCWarmupFinished();
+
+    std::shared_ptr<CWallet> wallet = std::make_shared<CWallet>(node.context()->chain.get(), "", CreateMockableWalletDatabase());
+    {
+        LOCK(wallet->cs_wallet);
+        wallet->SetWalletFlag(WALLET_FLAG_DESCRIPTORS);
+        wallet->SetupDescriptorScriptPubKeyMans();
+        const CBlockIndex* tip{WITH_LOCK(::cs_main, return test.m_node.chainman->ActiveChain().Tip())};
+        wallet->SetLastBlockProcessed(tip->nHeight, tip->GetBlockHash());
+    }
+    wallet->m_chain_notifications_handler = wallet->chain().handleNotifications(wallet);
+    wallet->SetBroadcastTransactions(true);
+    wallet->m_min_fee = CFeeRate{10000};
+    wallet->m_fallback_fee = CFeeRate{10000};
+    WalletContext& context = *node.walletLoader().context();
+    AddWallet(context, wallet);
+    struct Unload {
+        WalletContext& context;
+        std::shared_ptr<CWallet>& wallet;
+        ~Unload()
+        {
+            wallet->m_chain_notifications_handler.reset();
+            RemoveWallet(context, wallet, /*load_on_start=*/std::nullopt);
+        }
+    } unload{context, wallet};
+
+    SideChain chain{test};
+    const CScript miner{CScript() << OP_TRUE};
+    QVERIFY(chain.AppendMain(std::nullopt));
+    sidechain::MainDeposit deposit;
+    deposit.destination = wallet::getnewaddress(*wallet);
+    deposit.amount = 50 * COIN;
+    deposit.txid = uint256{0xdf};
+    QVERIFY(chain.AppendMain(std::nullopt, {deposit}));
+    QVERIFY(chain.Mine(miner));
+
+    std::unique_ptr<const PlatformStyle> platform_style(PlatformStyle::instantiate("other"));
+    OptionsModel options_model(node);
+    bilingual_str error;
+    QVERIFY(options_model.Init(error));
+    ClientModel client_model(node, &options_model);
+    WalletModel wallet_model(interfaces::MakeWallet(context, wallet), client_model, platform_style.get());
+    const auto rpc{[&](const std::string& method, const UniValue& params, bool of_wallet) {
+        QString rpc_error;
+        const auto result{NodeRpc::Call(&client_model, method, params, rpc_error, of_wallet ? std::optional<QString>{QString{}} : std::nullopt)};
+        if (!result) qWarning("%s: %s", method.c_str(), qPrintable(rpc_error));
+        return result;
+    }};
+    const auto tip_height{[&] { return WITH_LOCK(::cs_main, return test.m_node.chainman->ActiveChain().Height()); }};
+    const auto mine_until{[&](const std::function<bool(int)>& next_is) {
+        for (int i{0}; i < 30 && !next_is(tip_height() + 1); ++i) QVERIFY(chain.Mine(miner));
+        QVERIFY(next_is(tip_height() + 1));
+    }};
+
+    // A decision on a scale from 0 to 100, one of yes or no, a market on the first and one on both.
+    const int period{rpc("gethivemindinfo", NodeRpc::Args({}), false).value()["period"].getInt<int>()};
+    const int event{period + 2};
+    const QString scaled_question{"How many on the scale?"};
+    const auto scaled{rpc("createdecision", NodeRpc::Args({scaled_question.toStdString(), event, 1, true, 0, 100}), true)};
+    QVERIFY(scaled);
+    const auto binary{rpc("createdecision", NodeRpc::Args({"Yes or no?", event}), true)};
+    QVERIFY(binary);
+    QVERIFY(chain.Mine(miner));
+    UniValue one{UniValue::VARR};
+    one.push_back((*scaled)["id"]);
+    UniValue both{one};
+    both.push_back((*binary)["id"]);
+    QVERIFY(rpc("createmarket", NodeRpc::Args({"On a scale", one, 10}), true));
+    QVERIFY(rpc("createmarket", NodeRpc::Args({"On two decisions", both, 10}), true));
+    QVERIFY(chain.Mine(miner));
+
+    NodeRpc::Restart();
+    struct StopRpc {
+        ~StopRpc() { NodeRpc::Stop(); }
+    } stop_rpc;
+    MarketsDialog page([] { return std::optional<QString>{QString{}}; });
+    page.resize(1100, 750);
+    page.setClientModel(&client_model);
+    page.show();
+    Settle(page);
+    auto* summary{page.findChild<QLabel*>("marketsSummary")};
+    QVERIFY2(summary->text().contains("2 markets, 2 decisions"), qPrintable(summary->text()));
+    auto* status{page.findChild<QLabel*>("marketsStatus")};
+    auto* tabs{page.findChild<QTabWidget*>("marketsTabs")};
+    auto* back{page.findChild<QPushButton*>("backButton")};
+    auto* amount{page.findChild<QLineEdit*>("tradeAmount")};
+    auto* order{page.findChild<QPushButton*>("orderButton")};
+    auto* order_note{page.findChild<QLabel*>("orderNote")};
+    auto* input_mode{page.findChild<QComboBox*>("inputMode")};
+    tabs->setCurrentIndex(0);
+
+    // A market on one number: where on the scale it puts it, and its outcomes the two ends of the scale.
+    QWidget* card{WithLabel(page, "marketCard", "On a scale")};
+    QVERIFY(card);
+    QTest::mouseClick(card, Qt::LeftButton);
+    QVERIFY(back->isVisible());
+    bool gauge{false};
+    for (const QLabel* label : Live<QLabel>(page, nullptr)) gauge |= label->text().startsWith("The market puts it at about <b style=\"font-size:16pt\">50.00</b> on the scale from 0 to 100.");
+    QVERIFY(gauge);
+    QVERIFY(WithLabel(page, "outcomeRow", "Lower (toward 0)"));
+    QWidget* higher{WithLabel(page, "outcomeRow", "Higher (toward 100)")};
+    QVERIFY(higher);
+
+    // Orders the page cannot place: coins that buy no share, and more shares than there are coins.
+    QTest::mouseClick(higher, Qt::LeftButton);
+    QVERIFY(amount->isEnabled());
+    input_mode->setCurrentIndex(0);
+    amount->setText("0.0000000001");
+    QCOMPARE(order_note->text(), QString{"That buys no shares."});
+    QVERIFY(!order->isEnabled());
+    input_mode->setCurrentIndex(1);
+    amount->setText("30000000");
+    QCOMPARE(order_note->text(), QString{"Amount out of range"});
+    QVERIFY(!order->isEnabled());
+    amount->clear();
+    input_mode->setCurrentIndex(0);
+    back->click();
+
+    // A market on two decisions: each outcome names an answer to each.
+    card = WithLabel(page, "marketCard", "On two decisions");
+    QVERIFY(card);
+    QTest::mouseClick(card, Qt::LeftButton);
+    QVERIFY(WithLabel(page, "outcomeRow", QStringLiteral("%1: Lower (toward 0)  ·  Yes or no?: No").arg(scaled_question)));
+    QVERIFY(WithLabel(page, "outcomeRow", QStringLiteral("%1: Higher (toward 100)  ·  Yes or no?: Yes").arg(scaled_question)));
+    back->click();
+
+    // The vote: a wallet without reputation cannot seal one; on a scale, the answer is a number.
+    mine_until([&](int height) { return height / 6 == event + 1 && height % 6 >= 1 && height % 6 < 4; });
+    Settle(page);
+    tabs->setCurrentIndex(3);
+    QWidget* ballot{WithLabel(page, "ballotCard", scaled_question)};
+    QVERIFY(ballot);
+    QAbstractButton* is_number{Answer(ballot, "It is")};
+    QVERIFY(is_number);
+    auto* number{ballot->findChild<QSpinBox*>()};
+    QVERIFY(number);
+    QCOMPARE(number->minimum(), 0);
+    QCOMPARE(number->maximum(), 100);
+    is_number->click();
+    number->setValue(42);
+    ballot->findChild<QPushButton*>("sealButton")->click();
+    QCOMPARE(status->text(), QString{"This wallet holds no reputation, so it cannot vote."});
+
+    const std::string descriptor{strprintf("wpkh(%s)", GENESIS_VOTECOIN_KEY)};
+    const auto descriptor_info{rpc("getdescriptorinfo", NodeRpc::Args({descriptor}), false)};
+    QVERIFY(descriptor_info);
+    UniValue import{UniValue::VOBJ};
+    import.pushKV("desc", descriptor + "#" + (*descriptor_info)["checksum"].get_str());
+    import.pushKV("timestamp", "now");
+    UniValue imports{UniValue::VARR};
+    imports.push_back(import);
+    const auto imported{rpc("importdescriptors", NodeRpc::Args({imports}), true)};
+    QVERIFY(imported && (*imported)[0]["success"].get_bool());
+    Settle(page);
+    ballot = WithLabel(page, "ballotCard", scaled_question);
+    QVERIFY(ballot);
+    Answer(ballot, "It is")->click();
+    ballot->findChild<QSpinBox*>()->setValue(42);
+    ballot->findChild<QPushButton*>("sealButton")->click();
+    QVERIFY2(status->text().startsWith(QStringLiteral("Sealed the vote on \"%1\"").arg(scaled_question)), qPrintable(status->text()));
+    QVERIFY(chain.Mine(miner));
+    Settle(page);
+    // The number sealed is kept, and filled in again.
+    ballot = WithLabel(page, "ballotCard", scaled_question);
+    QVERIFY(ballot);
+    QVERIFY(Answer(ballot, "It is")->isChecked());
+    QCOMPARE(ballot->findChild<QSpinBox*>()->value(), 42);
+
+    // The market shown goes with the blocks that a reorg takes back: the page goes back to the list.
+    tabs->setCurrentIndex(0);
+    // Trading in it is closed by now: shown with the markets that are no longer traded.
+    page.findChild<QCheckBox*>("showResolved")->setChecked(true);
+    card = WithLabel(page, "marketCard", "On a scale");
+    QVERIFY(card);
+    QTest::mouseClick(card, Qt::LeftButton);
+    QVERIFY(back->isVisible());
+    const std::string opened{WITH_LOCK(::cs_main, return test.m_node.chainman->ActiveChain()[2]->GetBlockHash().GetHex())};
+    QVERIFY(rpc("invalidateblock", NodeRpc::Args({opened}), false));
+    Settle(page);
+    QVERIFY(!back->isVisible());
+    QVERIFY2(summary->text().contains("0 markets, 0 decisions"), qPrintable(summary->text()));
+    page.hide();
 }
 
 /** The page where periods are counted in mainchain time, without a wallet. */
@@ -810,6 +1008,11 @@ void TestNoMarketsPage(interfaces::Node& node)
 void MarketsTests::marketsTests()
 {
     TestMarketsPage(m_node);
+}
+
+void MarketsTests::scaledMarketsTests()
+{
+    TestScaledMarketsPage(m_node);
 }
 
 void MarketsTests::timedMarketsTests()
