@@ -11,7 +11,7 @@
 - A vote sealed with the salt of the round before, mined after the decision was put off, is not revealed.
 - A reorganisation that takes back the actions of a block, and mines them again.
 - The state of the markets across a restart, -reindex and -reindex-chainstate.
-- A node that is no sidechain has no markets.
+- A node that is no sidechain has no markets; periods of time are at least 30 seconds long.
 """
 
 from decimal import Decimal
@@ -21,7 +21,7 @@ from feature_sidechain import ACTIVATION_PERIOD, SLOT, SidechainTest
 from test_framework.address import key_to_p2pkh, keyhash_to_p2pkh, script_to_p2sh
 from test_framework.descriptors import descsum_create
 from test_framework.script import CScript, OP_TRUE
-from test_framework.test_node import TestNode
+from test_framework.test_node import ErrorMatch, TestNode
 from test_framework.util import assert_equal, assert_raises_rpc_error, get_datadir_path, initialize_datadir
 from test_framework.wallet_util import generate_keypair
 
@@ -203,6 +203,8 @@ class HivemindWalletTest(SidechainTest):
         assert_raises_rpc_error(-1, "This chain is not running as a sidechain, so it has no markets", plain.gethivemindinfo)
         assert_raises_rpc_error(-1, "This chain is not running as a sidechain, so it has no markets", plain.listdecisions)
         plain.stop_node()
+        # Periods of time are at least 30 seconds long.
+        plain.assert_start_raises_init_error(["-hivemindperiodseconds=29"], "Invalid -hivemindperiodseconds: a period is at least 30 seconds", match=ErrorMatch.PARTIAL_REGEX)
 
 if __name__ == '__main__':
     HivemindWalletTest(__file__).main()
