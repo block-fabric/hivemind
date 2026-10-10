@@ -311,7 +311,6 @@ struct Decision {
     CAmount fee{0};
 
     SERIALIZE_METHODS(Decision, obj) { READWRITE(obj.listing, obj.height, obj.close_period, obj.rolls, obj.resolved, obj.outcome, obj.fee); }
-    friend bool operator==(const Decision& a, const Decision& b);
 };
 
 struct Market {
@@ -328,7 +327,6 @@ struct Market {
     uint32_t settled_period{0};
 
     SERIALIZE_METHODS(Market, obj) { READWRITE(obj.opening, obj.height, obj.shares, obj.treasury, obj.fees, obj.settled, obj.settled_period); }
-    friend bool operator==(const Market& a, const Market& b);
 };
 
 struct PositionKey {

@@ -55,18 +55,6 @@ bool CheckSignature(const T& action, const Account& signer, const COutPoint& fir
 
 } // namespace
 
-bool operator==(const Decision& a, const Decision& b)
-{
-    return ActionScript(a.listing) == ActionScript(b.listing) && a.height == b.height && a.close_period == b.close_period &&
-           a.rolls == b.rolls && a.resolved == b.resolved && a.outcome == b.outcome && a.fee == b.fee;
-}
-
-bool operator==(const Market& a, const Market& b)
-{
-    return ActionScript(a.opening) == ActionScript(b.opening) && a.height == b.height && a.shares == b.shares &&
-           a.treasury == b.treasury && a.fees == b.fees && a.settled == b.settled && a.settled_period == b.settled_period;
-}
-
 CScript ActionScript(const Action& action)
 {
     DataStream stream;
