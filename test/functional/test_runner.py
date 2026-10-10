@@ -173,6 +173,8 @@ BASE_SCRIPTS = [
     'feature_hivemind.py',
     'feature_hivemind_miner.py',
     'feature_hivemind_salt.py',
+    'feature_hivemind_rejects.py',
+    'feature_hivemind_wallet.py',
     'feature_sidechain_follower.py',
     'feature_drivechain_rebuild.py',
     'rpc_setgenerate.py',

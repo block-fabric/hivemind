@@ -8,6 +8,9 @@ A decision whose last period goes by without a block of this chain in its reveal
 later, in the same round. A reveal sent in that phase -- which the next block's clock allowed, but which no
 block mined in it -- made its salt public: a vote sealed again for the new period has to have another salt.
 And a vote sealed before the decision was moved can still be revealed.
+
+With periods of mainchain time, a vote can also be revealed as soon as the mainchain is in the reveal phase
+of its last period, before a block of this chain is.
 """
 
 from decimal import Decimal
@@ -110,6 +113,30 @@ class HivemindSaltTest(SidechainTest):
         assert_equal(votes, {alice: 0, bob: 1})
         assert_equal(side.getmempoolinfo()["size"], 0)
         assert_equal(Decimal(sum(r["amount"] for r in side.listreputation())), 100)
+
+        self.log.info("Periods are counted in mainchain time, from the beginning of time")
+        info = side.gethivemindinfo()
+        assert_equal((info["periodseconds"], info["starttime"]), (PERIOD_SECONDS, 0))
+        assert "periodblocks" not in info
+
+        self.log.info("A vote can be revealed once the mainchain is in the reveal phase of its period, before this chain is")
+        period = close + 3
+        self.go_to(period, SEAL_AT)
+        early = side.createdecision("Revealed before a block of its reveal phase?", period, 2)["id"]
+        self.sync_mempools()
+        self.bmm()
+        self.go_to(period + 1, SEAL_AT)
+        side.sealvote(alice, early, "yes")
+        self.sync_mempools()
+        self.bmm()
+        # The last block of this chain is of the period before; the next one is in the reveal phase of this one.
+        self.go_to(period + 2, REVEAL_AT, mine=False)
+        assert_equal((side.gethivemindinfo()["period"], side.gethivemindinfo()["phase"]), (period + 1, "seal"))
+        side.revealvote(alice, early, "yes")
+        self.sync_mempools()
+        self.bmm()
+        assert_equal(side.getdecision(early)["closeperiod"], period + 2)
+        assert_equal(side.getdecision(early)["votes"], [{"voter": alice, "revealed": True, "answer": 1}])
 
 
 if __name__ == '__main__':
