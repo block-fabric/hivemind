@@ -22,6 +22,9 @@ public:
 
 private Q_SLOTS:
     void marketsTests();
+    void timedMarketsTests();
+    void noMarketsTests();
+    void nodeRpcTests();
 };
 
 #endif // BITCOIN_QT_TEST_MARKETSTESTS_H
