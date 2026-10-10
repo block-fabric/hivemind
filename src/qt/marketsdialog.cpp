@@ -511,7 +511,11 @@ QWidget* MarketsDialog::createMarketsTab()
     });
     connect(m_input_mode, qOverload<int>(&QComboBox::currentIndexChanged), this, &MarketsDialog::updatePreview);
     connect(m_amount, &QLineEdit::textChanged, this, &MarketsDialog::updatePreview);
-    connect(m_max, &QPushButton::clicked, this, [this] { m_amount->setText(Coins(myShares(m_market, m_state))); });
+    // A sale is from one account: the most that can be sold at once is what the account that holds most has.
+    connect(m_max, &QPushButton::clicked, this, [this] {
+        QString account;
+        m_amount->setText(Coins(myShares(m_market, m_state, &account)));
+    });
     connect(m_order, &QPushButton::clicked, this, &MarketsDialog::placeOrder);
     return m_market_pages;
 }
@@ -871,11 +875,14 @@ QWidget* MarketsDialog::createVoteTab()
     reputation_layout->addWidget(m_reputation, 1);
     auto* row{new QHBoxLayout};
     m_transfer_to = new QLineEdit(reputation);
+    m_transfer_to->setObjectName("transferTo");
     m_transfer_to->setPlaceholderText(tr("Address of the account to move reputation to"));
     m_transfer_amount = new QLineEdit(reputation);
+    m_transfer_amount->setObjectName("transferAmount");
     m_transfer_amount->setPlaceholderText(tr("Amount"));
     m_transfer_amount->setMaximumWidth(140);
     auto* transfer_button{new QPushButton(tr("Move from the selected account"), reputation)};
+    transfer_button->setObjectName("transferButton");
     row->addWidget(m_transfer_to, 1);
     row->addWidget(m_transfer_amount);
     row->addWidget(transfer_button);
