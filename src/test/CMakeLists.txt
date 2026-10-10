@@ -55,6 +55,7 @@ add_executable(test_bitcoin
   getarg_tests.cpp
   hash_tests.cpp
   headers_sync_chainwork_tests.cpp
+  hivemind_node_tests.cpp
   hivemind_tests.cpp
   httpserver_tests.cpp
   i2p_tests.cpp
