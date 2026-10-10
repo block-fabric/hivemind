@@ -138,7 +138,29 @@ FUZZ_TARGET(sidechain_state, .init = initialize_sidechain)
             const bool supported{std::any_of(last.pending.begin(), last.pending.end(), [&](const sidechain::MainPendingBundle& b) {
                 return b.score >= params.pending_min_score && (!ours || b.hash != ours->hash);
             })};
-            assert(main_pending == supported);
+            // Or the one leader of the slot (no tie), not ours, whose score rose by
+            // PENDING_TREND_MIN_RISE over the last PENDING_TREND_BLOCKS blocks (from 1 if it was not
+            // pending then).
+            bool rising{false};
+            const sidechain::MainPendingBundle* leader{nullptr};
+            bool tie{false};
+            for (const auto& b : last.pending) {
+                if (!leader || b.score > leader->score) {
+                    leader = &b;
+                    tie = false;
+                } else if (b.score == leader->score) {
+                    tie = true;
+                }
+            }
+            if (leader && !tie && (!ours || leader->hash != ours->hash)) {
+                const auto earlier{*mainchain.GetBlock(std::max(state.MainHeight() - sidechain::PENDING_TREND_BLOCKS, 0))};
+                uint32_t before{1};
+                for (const auto& b : earlier.pending) {
+                    if (b.hash == leader->hash) before = b.score;
+                }
+                rising = leader->score >= before + sidechain::PENDING_TREND_MIN_RISE;
+            }
+            assert(main_pending == (supported || rising));
             // A bundle left pending is one the mainchain proposed in time, or that is still in time.
             if (ours && state.BundleMainHeight() >= 0 && state.MainHeight() - state.BundleMainHeight() >= params.unproposed_expiry_blocks) {
                 assert(mainchain.ProposedBetween(ours->hash, state.BundleMainHeight(), state.MainHeight()));
