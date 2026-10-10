@@ -76,6 +76,10 @@ std::vector<unsigned char> Sign(const CWallet& wallet, const std::string& messag
 template <typename T>
 std::pair<CTransactionRef, uint32_t> SendAction(CWallet& wallet, T action, CAmount value, const std::optional<Account>& signer = std::nullopt)
 {
+    // Made, signed and committed under the lock of the wallet, as sendtoaddress does: signing reads the
+    // wallet's transactions (SignTransaction requires cs_wallet), and another call must not pick the
+    // same coins between their selection and the commit.
+    LOCK(wallet.cs_wallet);
     const auto script_of{[&] { return hivemind::ActionScript(Action{action}); }};
     if constexpr (requires { action.signature; }) {
         action.signature.assign(CPubKey::COMPACT_SIGNATURE_SIZE, 0);
