@@ -1124,16 +1124,26 @@ void State::BeginBlock(int height, int64_t main_time, const Consensus::HivemindP
             // Closing in this period, which the clock entered in its reveal phase: if every period
             // of its vote came after the last block, nobody could seal a vote on it.
             if (decision.close_period == clock.period && (!clock.reveal_phase || decision.close_period + 1 <= period + decision.listing.vote_periods)) continue;
+            const uint32_t was_closing{decision.close_period};
             uint32_t close_period{first_open - 1 + decision.listing.vote_periods};
             while (ClosingIn(close_period) >= MAX_DECISIONS_PER_PERIOD) ++close_period;
             decision.close_period = close_period;
             SetDecision(id, decision);
-            // Its seals stand, and are revealed then: the holdings that sealed them stay until then.
-            std::vector<Account> voters;
-            ForEachVoteOn(id, [&](const VoteKey& key, const Vote&) {
-                voters.push_back(key.voter);
+            // Its seals stand, and are revealed then: the holdings that sealed them stay until then. But
+            // a seal of a ballot is opened by revealing the ballot, which names the period it was sealed
+            // for and is done with when that period is over: such a seal could never be revealed, so it
+            // goes, and the voter seals again.
+            std::vector<Account> voters, unsealed;
+            ForEachVoteOn(id, [&](const VoteKey& key, const Vote& vote) {
+                const auto ballot{GetBallot(BallotKey{was_closing, key.voter})};
+                if (!vote.revealed && ballot && ballot->commitment == vote.commitment) {
+                    unsealed.push_back(key.voter);
+                } else {
+                    voters.push_back(key.voter);
+                }
                 return true;
             });
+            for (const Account& voter : unsealed) SetVote(VoteKey{id, voter}, std::nullopt);
             for (const Account& voter : voters) SealFor(voter, close_period);
         }
         std::map<Account, CAmount> paid;

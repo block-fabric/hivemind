@@ -1555,6 +1555,72 @@ BOOST_AUTO_TEST_CASE(one_stake_seals_for_one_account)
     BOOST_CHECK_EQUAL(state.ReputationOf(AccountOf(a)), 0);
 }
 
+BOOST_AUTO_TEST_CASE(ballot_seals_go_with_a_decision_put_off)
+{
+    // A stall puts a decision off: a vote sealed on its own is revealed later, but the seal of a
+    // ballot, opened only by revealing the ballot of the period it was sealed for, could never be. It
+    // goes, the holding is free once that period is over, and the voter seals again for the new period.
+    const CKey a{TestKey(1)}, b{TestKey(2)};
+    Consensus::HivemindParams params;
+    params.period_blocks = 6;
+    params.genesis_account = AccountOf(a);
+    TestMarkets markets;
+    hivemind::State& state{markets.state};
+    std::vector<CTxOut> payouts;
+    std::string reason;
+    state.BeginBlock(1, 0, params, payouts);
+    const CTransaction list{ActionTx(Listing(0, 1), params.listing_fee, 1)};
+    BOOST_REQUIRE(state.ApplyTx(list, 1, params, payouts, reason));
+    const hivemind::Id id{hivemind::MakeId(list.GetHash(), 0)};
+    // Votes on it close in period 1.
+    state.BeginBlock(6, 0, params, payouts);
+    uint8_t salt{10};
+    hivemind::TransferReputation t;
+    t.from = AccountOf(a);
+    t.to = AccountOf(b);
+    t.amount = params.reputation_supply / 2;
+    BOOST_REQUIRE(state.ApplyTx(SignedTx(t, 0, ++salt, a, params), 6, params, payouts, reason));
+    hivemind::SealVote seal;
+    seal.voter = AccountOf(a);
+    seal.decision = id;
+    seal.commitment = uint256{1};
+    BOOST_REQUIRE(state.ApplyTx(SignedTx(seal, 0, ++salt, a, params), 6, params, payouts, reason));
+    const auto seal_ballot{[&](uint32_t close_period, const uint256& vote_salt, int height) {
+        hivemind::SealBallot ballot;
+        ballot.voter = AccountOf(b);
+        ballot.close_period = close_period;
+        ballot.decisions = {id};
+        ballot.commitment = hivemind::BallotCommitment(AccountOf(b), close_period, ballot.decisions, {1}, vote_salt);
+        BOOST_REQUIRE_MESSAGE(state.ApplyTx(SignedTx(ballot, 0, ++salt, b, params), height, params, payouts, reason), reason);
+    }};
+    seal_ballot(1, uint256{3}, 6);
+    BOOST_REQUIRE(state.GetVote({id, AccountOf(b)}));
+    BOOST_REQUIRE(state.GetBallot({1, AccountOf(b)}));
+
+    // The chain stalls through period 1: the decision is put off to period 4.
+    state.BeginBlock(4 * 6, 0, params, payouts);
+    BOOST_REQUIRE_EQUAL(state.GetDecision(id)->close_period, 4U);
+    BOOST_CHECK(state.GetVote({id, AccountOf(a)}));
+    BOOST_CHECK_EQUAL(*state.SealedUntil(AccountOf(a)), 4U);
+    BOOST_CHECK(!state.GetVote({id, AccountOf(b)}));
+    BOOST_CHECK(!state.GetBallot({1, AccountOf(b)}));
+    BOOST_CHECK(!state.SealedUntil(AccountOf(b)));
+
+    // Sealed again for period 4, and revealed in its reveal phase.
+    seal_ballot(4, uint256{4}, 4 * 6);
+    BOOST_REQUIRE(state.GetVote({id, AccountOf(b)}));
+    state.BeginBlock(4 * 6 + 4, 0, params, payouts);
+    BOOST_REQUIRE(state.RevealPhase());
+    hivemind::RevealBallot r;
+    r.voter = AccountOf(b);
+    r.close_period = 4;
+    r.answers = {1};
+    r.salt = uint256{4};
+    BOOST_REQUIRE(state.ApplyTx(ActionTx(r, 0, ++salt), 4 * 6 + 4, params, payouts, reason));
+    BOOST_CHECK(state.GetVote({id, AccountOf(b)})->revealed);
+    BOOST_CHECK_EQUAL(state.GetVote({id, AccountOf(b)})->answer, 1);
+}
+
 BOOST_AUTO_TEST_CASE(ballots_need_reputation)
 {
     // A ballot is sealed only by an account with the reputation of a voter, as a single vote is.
