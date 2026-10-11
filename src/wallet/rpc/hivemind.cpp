@@ -74,40 +74,44 @@ std::vector<unsigned char> Sign(const CWallet& wallet, const std::string& messag
  * @return the transaction and the index of the output with the action
  */
 template <typename T>
-std::pair<CTransactionRef, uint32_t> SendAction(CWallet& wallet, T action, CAmount value, const std::optional<Account>& signer = std::nullopt)
+std::pair<CTransactionRef, uint32_t> SendAction(CWallet& wallet, T action, CAmount value, const std::optional<Account>& signer = std::nullopt) EXCLUSIVE_LOCKS_REQUIRED(!wallet.cs_wallet)
 {
     // Made, signed and committed under the lock of the wallet, as sendtoaddress does: signing reads the
     // wallet's transactions (SignTransaction requires cs_wallet), and another call must not pick the
     // same coins between their selection and the commit.
-    LOCK(wallet.cs_wallet);
-    const auto script_of{[&] { return hivemind::ActionScript(Action{action}); }};
-    if constexpr (requires { action.signature; }) {
-        action.signature.assign(CPubKey::COMPACT_SIGNATURE_SIZE, 0);
-    }
-    const CScript placeholder{script_of()};
-    std::vector<CRecipient> recipients{{CNoDestination{placeholder}, value, /*fSubtractFeeFromAmount=*/false}};
-    CCoinControl coin_control;
-    auto res{CreateTransaction(wallet, recipients, /*change_pos=*/std::nullopt, coin_control, /*sign=*/false)};
-    if (!res) throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, util::ErrorString(res).original);
+    const auto [tx, index]{[&]() -> std::pair<CTransactionRef, uint32_t> {
+        LOCK(wallet.cs_wallet);
+        const auto script_of{[&] { return hivemind::ActionScript(Action{action}); }};
+        if constexpr (requires { action.signature; }) {
+            action.signature.assign(CPubKey::COMPACT_SIGNATURE_SIZE, 0);
+        }
+        const CScript placeholder{script_of()};
+        std::vector<CRecipient> recipients{{CNoDestination{placeholder}, value, /*fSubtractFeeFromAmount=*/false}};
+        CCoinControl coin_control;
+        auto res{CreateTransaction(wallet, recipients, /*change_pos=*/std::nullopt, coin_control, /*sign=*/false)};
+        if (!res) throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, util::ErrorString(res).original);
 
-    CMutableTransaction mtx{*res->tx};
-    uint32_t index{0};
-    while (index < mtx.vout.size() && mtx.vout[index].scriptPubKey != placeholder) ++index;
-    CHECK_NONFATAL(index < mtx.vout.size());
-    if constexpr (requires { action.signature; }) {
-        action.signature.clear();
-        // The message names the chain, the output and the outputs of the transaction. The placeholder
-        // has the size of the signature, so that the fee is right, and is left out of what is signed,
-        // as the signature will be.
-        action.signature = Sign(wallet, hivemind::ActionMessage(Action{action}, mtx.vin[0].prevout, index, hivemind::ActionOutputsHash(mtx.vout),
-                                                                wallet.chain().getHivemindParams()), *Assert(signer));
-        mtx.vout[index].scriptPubKey = script_of();
-    }
-    if (!wallet.SignTransaction(mtx)) throw JSONRPCError(RPC_WALLET_ERROR, "Signing the transaction failed");
+        CMutableTransaction mtx{*res->tx};
+        uint32_t index{0};
+        while (index < mtx.vout.size() && mtx.vout[index].scriptPubKey != placeholder) ++index;
+        CHECK_NONFATAL(index < mtx.vout.size());
+        if constexpr (requires { action.signature; }) {
+            action.signature.clear();
+            // The message names the chain, the output and the outputs of the transaction. The placeholder
+            // has the size of the signature, so that the fee is right, and is left out of what is signed,
+            // as the signature will be.
+            action.signature = Sign(wallet, hivemind::ActionMessage(Action{action}, mtx.vin[0].prevout, index, hivemind::ActionOutputsHash(mtx.vout),
+                                                                    wallet.chain().getHivemindParams()), *Assert(signer));
+            mtx.vout[index].scriptPubKey = script_of();
+        }
+        if (!wallet.SignTransaction(mtx)) throw JSONRPCError(RPC_WALLET_ERROR, "Signing the transaction failed");
 
-    const CTransactionRef tx{MakeTransactionRef(std::move(mtx))};
-    wallet.CommitTransaction(tx, /*replaces_txid=*/std::nullopt, /*comment=*/std::nullopt, /*comment_to=*/std::nullopt);
-    if (!wallet.chain().isInMempool(tx->GetHash())) {
+        CTransactionRef tx{MakeTransactionRef(std::move(mtx))};
+        wallet.CommitTransaction(tx, /*replaces_txid=*/std::nullopt, /*comment=*/std::nullopt, /*comment_to=*/std::nullopt);
+        return {std::move(tx), index};
+    }()};
+    // With -walletbroadcast=0 the transaction is kept for the user to send, not refused.
+    if (CommittedTransactionRefused(wallet, tx)) {
         wallet.AbandonTransaction(tx->GetHash());
         throw JSONRPCError(RPC_WALLET_ERROR, "The transaction was not accepted into the mempool");
     }

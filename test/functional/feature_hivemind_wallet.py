@@ -6,7 +6,7 @@
 
 - Accounts: a P2PKH account is taken where a key hash is, but not for shares; a key that is not
   compressed cannot sign; an address that is not of a single key is no account.
-- A transaction the mempool refuses is abandoned, and its coins can be spent again.
+- A transaction the mempool refuses is abandoned, and its coins can be spent again; with -walletbroadcast=0 it is kept.
 - Answers, ballots, decisions that are not open, markets on decisions being voted on, trades of no shares.
 - A vote sealed with the salt of the round before, mined after the decision was put off, is not revealed.
 - A reorganisation that takes back the actions of a block, and mines them again.
@@ -177,6 +177,20 @@ class HivemindWalletTest(SidechainTest):
         # Of another answer, it is no seal of this account at all.
         assert_raises_rpc_error(-8, "That is not the answer that was sealed", side.revealvote, alice, rolled, "no")
         self.mine_txs()
+        self.check_in_sync()
+
+        self.log.info("With -walletbroadcast=0 the wallet keeps the transaction of an action for the user to send")
+        self.restart_node(1, extra_args=self.extra_args[1] + ["-walletbroadcast=0"])
+        kept = other.createdecision("Sent by hand?", period + 5)
+        assert_equal(other.getrawmempool(), [])
+        assert not other.gettransaction(kept["txid"]).get("abandoned", False)
+        raw = other.gettransaction(kept["txid"])["hex"]
+        self.restart_node(1)
+        self.connect_nodes(0, 1)
+        # The listing fee is burned: sent by hand, the burn is allowed.
+        side.sendrawtransaction(hexstring=raw, maxburnamount=100)
+        assert kept["txid"] in [t["txid"] for t in self.mine_txs()["tx"]]
+        assert_equal(side.getdecision(kept["id"])["text"], "Sent by hand?")
         self.check_in_sync()
 
         self.log.info("The state of the markets survives a restart, and is rebuilt by -reindex and -reindex-chainstate")
