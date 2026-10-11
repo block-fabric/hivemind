@@ -36,6 +36,9 @@
 #include <wallet/test/util.h>
 #include <wallet/wallet.h>
 
+#include <functional>
+#include <utility>
+
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
@@ -116,6 +119,19 @@ void ConfirmNext()
     QTimer::singleShot(0, [] {
         for (QWidget* widget : QApplication::topLevelWidgets()) {
             if (auto* box{qobject_cast<QMessageBox*>(widget)}; box && box->isVisible()) box->button(QMessageBox::Yes)->click();
+        }
+    });
+}
+
+/** Once the message box that the next action shows is shown: do `meanwhile`, as a block coming then would, and click Yes. */
+void ConfirmNextAfter(std::function<void()> meanwhile)
+{
+    QTimer::singleShot(0, [meanwhile = std::move(meanwhile)] {
+        for (QWidget* widget : QApplication::topLevelWidgets()) {
+            if (auto* box{qobject_cast<QMessageBox*>(widget)}; box && box->isVisible()) {
+                meanwhile();
+                box->button(QMessageBox::Yes)->click();
+            }
         }
     });
 }
@@ -774,7 +790,9 @@ void TestScaledMarketsPage(interfaces::Node& node)
     one.push_back((*scaled)["id"]);
     UniValue both{one};
     both.push_back((*binary)["id"]);
-    QVERIFY(rpc("createmarket", NodeRpc::Args({"On a scale", one, 10}), true));
+    const auto on_scale{rpc("createmarket", NodeRpc::Args({"On a scale", one, 10}), true)};
+    QVERIFY(on_scale);
+    const std::string on_scale_id{(*on_scale)["id"].get_str()};
     QVERIFY(rpc("createmarket", NodeRpc::Args({"On two decisions", both, 10}), true));
     QVERIFY(chain.Mine(miner));
 
@@ -831,6 +849,70 @@ void TestScaledMarketsPage(interfaces::Node& node)
     QTest::mouseClick(card, Qt::LeftButton);
     QVERIFY(WithLabel(page, "outcomeRow", QStringLiteral("%1: Lower (toward 0)  ·  Yes or no?: No").arg(scaled_question)));
     QVERIFY(WithLabel(page, "outcomeRow", QStringLiteral("%1: Higher (toward 100)  ·  Yes or no?: Yes").arg(scaled_question)));
+    back->click();
+
+    // An order confirmed while blocks come: it goes to the market confirmed, and only while it is as it was.
+    // The page fills its list of markets again with each block; one opened meanwhile can come before it.
+    const auto index_of{[&](const std::string& id) {
+        const auto markets{rpc("listmarkets", NodeRpc::Args({}), false)};
+        for (size_t i{0}; markets && i < markets->size(); ++i) {
+            if ((*markets)[i]["id"].get_str() == id) return int(i);
+        }
+        return -1;
+    }};
+    const auto shares_in{[&](const std::string& id) {
+        double shares{0};
+        int others{0};
+        const auto positions{rpc("getwalletpositions", NodeRpc::Args({}), true)};
+        if (!positions) return std::make_pair(-1.0, -1);
+        for (const UniValue& p : positions->getValues()) {
+            if (p["market"].get_str() == id) shares += p["shares"].get_real();
+            else ++others;
+        }
+        return std::make_pair(shares, others);
+    }};
+    const auto order_on_scale{[&] {
+        card = WithLabel(page, "marketCard", "On a scale");
+        QVERIFY(card);
+        QTest::mouseClick(card, Qt::LeftButton);
+        QWidget* up{WithLabel(page, "outcomeRow", "Higher (toward 100)")};
+        QVERIFY(up);
+        QTest::mouseClick(up, Qt::LeftButton);
+        input_mode->setCurrentIndex(1);
+        amount->setText("2");
+        QVERIFY(order->isEnabled() && order->text().startsWith("Buy for"));
+    }};
+    order_on_scale();
+    const int was_at{index_of(on_scale_id)};
+    QVERIFY(was_at >= 0);
+    int added{0};
+    ConfirmNextAfter([&] {
+        // Markets opened until one comes before it in the list, each in a block of its own; the page shows them.
+        for (; added < 8 && index_of(on_scale_id) == was_at; ++added) {
+            QVERIFY(rpc("createmarket", NodeRpc::Args({strprintf("Opened meanwhile %d", added), one, 1}), true));
+            QVERIFY(chain.Mine(miner));
+        }
+        Settle(page);
+    });
+    QTest::mouseClick(order, Qt::LeftButton);
+    QVERIFY(added > 0);
+    QVERIFY2(status->text().startsWith("Bought 2"), qPrintable(status->text()));
+    QVERIFY(chain.Mine(miner));
+    Settle(page);
+    QCOMPARE(shares_in(on_scale_id), std::make_pair(2.0, 0));
+    back->click();
+
+    // One that stops trading meanwhile: the order is not placed.
+    order_on_scale();
+    ConfirmNextAfter([&] {
+        mine_until([&](int height) { return height / 6 == event + 1 && height % 6 >= 1 && height % 6 < 4; });
+        Settle(page);
+    });
+    QTest::mouseClick(order, Qt::LeftButton);
+    QVERIFY2(status->text().startsWith("The market changed while the order was being confirmed"), qPrintable(status->text()));
+    QVERIFY(chain.Mine(miner));
+    Settle(page);
+    QCOMPARE(shares_in(on_scale_id), std::make_pair(2.0, 0));
     back->click();
 
     // The vote: a wallet without reputation cannot seal one; on a scale, the answer is a number.

@@ -1316,22 +1316,36 @@ void MarketsDialog::placeOrder()
 {
     const Market* m{market(m_market)};
     if (!m || m_trade_shares == 0 || m_state < 0) return;
-    const bool buying{m_trade_shares > 0};
-    const QString name{outcomeName(*m, m_state)};
-    const QString question{buying ? tr("Buy %1 shares of \"%2\" in \"%3\" for about %4?").arg(Coins(m_trade_shares), name, m->text, Coins(m_trade_total))
-                                  : tr("Sell %1 shares of \"%2\" in \"%3\" for about %4?").arg(Coins(-m_trade_shares), name, m->text, Coins(-m_trade_total))};
+    // What is confirmed, copied: the message box runs the event loop, and a block that comes meanwhile
+    // refreshes the page, which fills the list of markets again and moves or frees what `m` points at.
+    const QString id{m->id};
+    const QString status{m->status};
+    const int state{m_state};
+    const double shares{m_trade_shares};
+    const double total{m_trade_total};
+    const bool buying{shares > 0};
+    const QString name{outcomeName(*m, state)};
+    const QString question{buying ? tr("Buy %1 shares of \"%2\" in \"%3\" for about %4?").arg(Coins(shares), name, m->text, Coins(total))
+                                  : tr("Sell %1 shares of \"%2\" in \"%3\" for about %4?").arg(Coins(-shares), name, m->text, Coins(-total))};
+    m = nullptr;
     if (QMessageBox::question(this, windowTitle(), question, QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Yes) != QMessageBox::Yes) return;
+    // The market confirmed, as the page knows it now: still there, still shown, as it was.
+    const Market* now{market(id)};
+    if (!now || now->status != status || m_market != id || m_state != state) {
+        say(tr("The market changed while the order was being confirmed, so it was not placed. Check it and place it again."), /*error=*/true);
+        return;
+    }
     if (buying) {
-        if (const auto result{call("buyshares", Args({m->id.toStdString(), m_state, Exact(m_trade_shares)}), /*wallet=*/true)}) {
+        if (const auto result{call("buyshares", Args({id.toStdString(), state, Exact(shares)}), /*wallet=*/true)}) {
             m_amount->clear();
-            sent(tr("Bought %1 shares of \"%2\".").arg(Coins(m_trade_shares), name), *result);
+            sent(tr("Bought %1 shares of \"%2\".").arg(Coins(shares), name), *result);
         }
     } else {
         QString account;
-        myShares(m->id, m_state, &account);
-        if (const auto result{call("sellshares", Args({m->id.toStdString(), m_state, Exact(-m_trade_shares), account.toStdString()}), /*wallet=*/true)}) {
+        myShares(id, state, &account);
+        if (const auto result{call("sellshares", Args({id.toStdString(), state, Exact(-shares), account.toStdString()}), /*wallet=*/true)}) {
             m_amount->clear();
-            sent(tr("Sold %1 shares of \"%2\".").arg(Coins(-m_trade_shares), name), *result);
+            sent(tr("Sold %1 shares of \"%2\".").arg(Coins(-shares), name), *result);
         }
     }
 }
