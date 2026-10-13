@@ -582,7 +582,7 @@ bool RecordIndependent(const std::string& reject_reason)
     // What a block breaks whatever the mainchain did: the form of its withdrawals and commitments,
     // and the signatures of refunds (checked once the withdrawal is known and free); and the form and
     // signatures of what transactions ask of the markets (hivemind::CheckTx), which depend on the
-    // transaction alone.
+    // transaction alone; and what the sidechain's own rules say (ChainHooks::RecordIndependent).
     static const std::set<std::string> independent{
         "bad-sc-withdrawal", "bad-sc-withdrawal-amount", "bad-sc-refund-signature", "bad-sc-bundle-multiple",
         "bad-hm-too-many-actions", "bad-hm-format", "bad-hm-coinbase", "bad-hm-text", "bad-hm-vote-periods",
@@ -590,7 +590,7 @@ bool RecordIndependent(const std::string& reject_reason)
         "bad-hm-funding", "bad-hm-shares", "bad-hm-payment", "bad-hm-proceeds", "bad-hm-transfer",
         "bad-hm-signature", "bad-hm-vote",
     };
-    return independent.contains(reject_reason);
+    return independent.contains(reject_reason) || Hooks().RecordIndependent(reject_reason);
 }
 
 std::vector<CTxOut> State::TakePayouts(std::vector<CTxOut> owed, std::vector<CTxOut> owed_tx, uint64_t max_payouts)

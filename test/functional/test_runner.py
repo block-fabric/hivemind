@@ -175,6 +175,7 @@ BASE_SCRIPTS = [
     'feature_hivemind_salt.py',
     'feature_hivemind_rejects.py',
     'feature_hivemind_wallet.py',
+    'feature_sidechain_headers.py',
     'feature_sidechain_follower.py',
     'feature_sidechain_rules.py',
     'feature_sidechain_record.py',
