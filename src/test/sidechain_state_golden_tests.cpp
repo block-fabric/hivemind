@@ -20,6 +20,7 @@
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <script/script.h>
+#include <sidechain/hooks.h>
 #include <sidechain/mainchain.h>
 #include <sidechain/state.h>
 #include <sidechain/store.h>
@@ -30,6 +31,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -84,11 +86,15 @@ struct GoldenChain {
         {
             sidechain::StoreOverlay scratch{store, /*journal=*/false};
             sidechain::State dry{scratch};
-            std::vector<CTxOut> payouts, tx_payouts;
+            std::vector<CTxOut> payouts, peg_owed, tx_payouts;
             std::string reason;
-            if (dry.ApplyMainEvents(mainchain.Height(), mainchain, height + 1, params, payouts, reason) &&
+            // The sidechain's own peg actions, if it has any (none unless a test installs them).
+            const sidechain::PegStep step{.main_height = mainchain.Height(), .nonce = prev, .max_withdrawal_height = std::nullopt, .peg_height = std::nullopt};
+            if (sidechain::Hooks().BeforePegStep(dry, block, height + 1, step, params, peg_owed, reason) &&
+                dry.ApplyMainEvents(mainchain.Height(), mainchain, height + 1, params, payouts, reason) &&
                 dry.ApplyTxs(block, height + 1, params, dry.MainPending(mainchain, params), /*peg_step=*/true, tx_payouts, reason)) {
-                for (const CTxOut& out : dry.TakePayouts(std::move(payouts), std::move(tx_payouts))) coinbase.vout.push_back(out);
+                peg_owed.insert(peg_owed.end(), tx_payouts.begin(), tx_payouts.end());
+                for (const CTxOut& out : dry.TakePayouts(std::move(payouts), std::move(peg_owed))) coinbase.vout.push_back(out);
             }
         }
         block.vtx[0] = MakeTransactionRef(coinbase);
@@ -163,6 +169,24 @@ hivemind::Account TestAccount(size_t n)
     account.begin()[2] = static_cast<uint8_t>(n >> 8);
     return account;
 }
+
+/** Installs hooks for the life of the object; the template's again after. */
+struct InstallHooks {
+    explicit InstallHooks(std::unique_ptr<sidechain::ChainHooks> hooks) { sidechain::SetHooks(std::move(hooks)); }
+    ~InstallHooks() { sidechain::SetHooks(nullptr); }
+};
+
+/** Hooks whose peg actions of their own owe `count` outputs in every block that takes the peg actions. */
+struct PegOwedHooks : sidechain::ChainHooks {
+    size_t count;
+    explicit PegOwedHooks(size_t n) : count{n} {}
+    bool BeforePegStep(sidechain::State&, const CBlock&, int, const sidechain::PegStep&, const Consensus::SidechainParams&,
+                       std::vector<CTxOut>& owed_tx, std::string&) const override
+    {
+        for (size_t i{0}; i < count; ++i) owed_tx.emplace_back(static_cast<CAmount>(7 + i), CScript() << OP_2);
+        return true;
+    }
+};
 
 } // namespace
 
@@ -260,6 +284,34 @@ BOOST_AUTO_TEST_CASE(settlement_then_refunds_past_the_bound)
     chain.Check("f43d68c841d429973fdaf92ab8c24c6ceca605bfdb5c6440c8c58f939996b5df", "63ef6348aa05015da55c61221618ae5219383c6a6837f35ba5d77422c77778de", 801);
     BOOST_CHECK(chain.state.Queue().empty());
     BOOST_CHECK(chain.state.TxQueue().empty());
+}
+
+BOOST_AUTO_TEST_CASE(own_peg_actions_take_no_room_of_the_transactions)
+{
+    // Not golden values: what a sidechain's own peg actions owe (ChainHooks::BeforePegStep) is paid as
+    // refunds are, but takes none of the room the block's transactions have for their payouts
+    // (hivemind::MAX_TX_PAYOUTS_PER_BLOCK); it used to, and a block of as many refunds as a block takes
+    // was invalid (hm-block-payouts-full).
+    InstallHooks installed{std::make_unique<PegOwedHooks>(7)};
+    GoldenChain chain;
+    uint32_t nonce{0};
+    const CKey key{FixedKey(1)};
+    const CScript pay{GetScriptForDestination(WitnessV0KeyHash{key.GetPubKey()})};
+    std::vector<CTxOut> withdrawal_outs(hivemind::MAX_TX_PAYOUTS_PER_BLOCK + 1, CTxOut{COIN, sidechain::WithdrawalScript(1000, key.GetPubKey().GetID(), pay)});
+    const CTransactionRef withdrawals{Tx(withdrawal_outs, nonce)};
+    BOOST_REQUIRE_EQUAL(chain.Connect({withdrawals}), "");
+    BOOST_CHECK_EQUAL(chain.paid.size(), 7U);
+    std::vector<CTxOut> outs;
+    for (size_t i{0}; i < hivemind::MAX_TX_PAYOUTS_PER_BLOCK; ++i) outs.push_back(RefundOut(key, COutPoint{withdrawals->GetHash(), static_cast<uint32_t>(i)}));
+    const CTransactionRef refunds{Tx(outs, nonce)};
+    const CTransactionRef one_more{Tx({RefundOut(key, COutPoint{withdrawals->GetHash(), static_cast<uint32_t>(hivemind::MAX_TX_PAYOUTS_PER_BLOCK)})}, nonce)};
+    // One beyond the bound is still one too many.
+    BOOST_CHECK_EQUAL(chain.Connect({refunds, one_more}), "hm-block-payouts-full");
+    // As many as the bound: valid, and the coinbase pays what the peg actions owe, then the refunds.
+    BOOST_REQUIRE_EQUAL(chain.Connect({refunds}), "");
+    BOOST_REQUIRE_EQUAL(chain.paid.size(), 7 + hivemind::MAX_TX_PAYOUTS_PER_BLOCK);
+    for (size_t i{0}; i < 7; ++i) BOOST_CHECK(chain.paid[i] == (CTxOut{static_cast<CAmount>(7 + i), CScript() << OP_2}));
+    for (size_t i{7}; i < chain.paid.size(); ++i) BOOST_CHECK(chain.paid[i] == (CTxOut{COIN, pay}));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

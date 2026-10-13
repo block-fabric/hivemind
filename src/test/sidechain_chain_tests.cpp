@@ -8,6 +8,7 @@
 
 #include <addresstype.h>
 #include <arith_uint256.h>
+#include <hivemind/state.h>
 #include <chain.h>
 #include <coins.h>
 #include <common/signmessage.h>
@@ -28,6 +29,7 @@
 #include <script/script.h>
 #include <script/sign.h>
 #include <script/signingprovider.h>
+#include <sidechain/hooks.h>
 #include <sidechain/mainchain.h>
 #include <sidechain/state.h>
 #include <sidechain/store.h>
@@ -43,13 +45,16 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -736,6 +741,149 @@ BOOST_AUTO_TEST_CASE(refunds_are_not_accepted_in_packages)
     const auto plain{WITH_LOCK(::cs_main, return ProcessNewPackage(Chain(), *m_node.mempool, Package{MakeTransactionRef(parent), MakeTransactionRef(pays_for_it)}, /*test_accept=*/false, /*client_maxfeerate=*/{}))};
     BOOST_CHECK_MESSAGE(plain.m_state.IsValid(), plain.m_state.ToString());
     BOOST_CHECK(InMempool(parent) && InMempool(pays_for_it));
+}
+
+namespace {
+/** Installs hooks for the life of the object; the template's again after. */
+struct InstallHooks {
+    explicit InstallHooks(std::unique_ptr<sidechain::ChainHooks> hooks) { sidechain::SetHooks(std::move(hooks)); }
+    ~InstallHooks() { sidechain::SetHooks(nullptr); }
+};
+
+/** Hooks whose peg actions of their own owe `count` outputs in every block that takes the peg actions. */
+struct PegOwedHooks : sidechain::ChainHooks {
+    size_t count;
+    explicit PegOwedHooks(size_t n) : count{n} {}
+    bool BeforePegStep(sidechain::State&, const CBlock&, int, const sidechain::PegStep&, const Consensus::SidechainParams&,
+                       std::vector<CTxOut>& owed_tx, std::string&) const override
+    {
+        for (size_t i{0}; i < count; ++i) owed_tx.emplace_back(static_cast<CAmount>(7 + i), CScript() << OP_2);
+        return true;
+    }
+};
+
+/** Hooks under which no block takes the peg actions. */
+struct NoPegHooks : sidechain::ChainHooks {
+    bool GetPegStep(const CBlock&, const sidechain::Mainchain&, std::optional<sidechain::PegStep>& step, std::string&) const override
+    {
+        step.reset();
+        return true;
+    }
+};
+
+size_t RefundsIn(const CTransaction& tx)
+{
+    return static_cast<size_t>(std::count_if(tx.vout.begin(), tx.vout.end(), [](const CTxOut& out) { return sidechain::ParseRefundScript(out.scriptPubKey).has_value(); }));
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(assembly_fills_the_payout_bound)
+{
+    // Block assembly against validation, with more refunds in the mempool than a block's transactions
+    // may give rise to payouts (hivemind::MAX_TX_PAYOUTS_PER_BLOCK, which refunds count against): the
+    // block is filled to the bound and is valid. So it is with peg actions of the sidechain's own that
+    // owe outputs: they take none of that room. And a block without the peg actions
+    // (SidechainAssembly::Peg::NONE) keeps the bound too, pays nothing, and takes only what its filter
+    // lets in.
+    const auto spend{[&](const std::pair<COutPoint, CTxOut>& coin, std::vector<CTxOut> outputs, CAmount fee = TX_FEE) {
+        CAmount out_value{0};
+        for (const CTxOut& out : outputs) out_value += out.nValue;
+        if (coin.second.nValue - out_value - fee > 0) outputs.emplace_back(coin.second.nValue - out_value - fee, script);
+        return Spend(coin.first, coin.second, std::move(outputs));
+    }};
+    const auto send{[&](const CMutableTransaction& tx) {
+        const auto result{Accept(tx)};
+        BOOST_REQUIRE_MESSAGE(result.m_result_type == MempoolAcceptResult::ResultType::VALID, result.m_state.ToString());
+    }};
+    const auto out_of{[](const CMutableTransaction& tx, uint32_t n) { return std::pair{COutPoint{tx.GetHash(), n}, tx.vout[n]}; }};
+
+    // A coin for each transaction; withdrawals, refundable by the key.
+    COutPoint deposit;
+    const CTxOut deposited{Fund(100 * COIN, deposit)};
+    const CMutableTransaction coins{spend({deposit, deposited}, std::vector<CTxOut>(6, CTxOut{COIN, script}))};
+    send(coins);
+    Mine();
+    const size_t refunds{hivemind::MAX_TX_PAYOUTS_PER_BLOCK + 50};
+    std::vector<CTxOut> withdrawal_outs(refunds, CTxOut{Params().min_withdrawal + MAIN_FEE, sidechain::WithdrawalScript(MAIN_FEE, key.GetPubKey().GetID(), script)});
+    const CMutableTransaction withdrawals{spend(out_of(coins, 0), withdrawal_outs)};
+    send(withdrawals);
+    BOOST_REQUIRE(InBlock(Mine(), withdrawals));
+
+    // Requests for every refund: in transactions of 100, 100 and 50 that pay well, and one of 50 that pays little.
+    const auto refund_out{[&](size_t n) {
+        sidechain::RefundRequest request;
+        request.withdrawal = COutPoint{withdrawals.GetHash(), static_cast<uint32_t>(n)};
+        BOOST_REQUIRE(key.SignCompact(MessageHash(sidechain::RefundMessage(request.withdrawal)), request.signature));
+        return CTxOut{0, sidechain::RefundScript(request)};
+    }};
+    std::vector<CMutableTransaction> refund_txs;
+    for (const auto& [from, to, fee] : std::vector<std::tuple<size_t, size_t, CAmount>>{{0, 100, 40 * TX_FEE}, {100, 200, 40 * TX_FEE}, {200, 250, 20 * TX_FEE}, {250, refunds, TX_FEE}}) {
+        std::vector<CTxOut> outs;
+        for (size_t n{from}; n < to; ++n) outs.push_back(refund_out(n));
+        refund_txs.push_back(spend(out_of(coins, 1 + refund_txs.size()), outs, fee));
+        send(refund_txs.back());
+    }
+
+    const auto refunds_in{[](const CBlock& block) {
+        size_t n{0};
+        for (size_t i{1}; i < block.vtx.size(); ++i) n += RefundsIn(*block.vtx[i]);
+        return n;
+    }};
+    const auto check_valid{[&](const CBlock& block) {
+        LOCK(::cs_main);
+        const BlockValidationState state{TestBlockValidity(Chain(), block, /*check_pow=*/false, /*check_merkle_root=*/true)};
+        BOOST_CHECK_MESSAGE(state.IsValid(), state.ToString());
+    }};
+    node::BlockCreateOptions options;
+    options.coinbase_output_script = CScript() << OP_TRUE;
+    options.test_block_validity = true;
+    const auto assembled{[&](node::SidechainAssembly assembly = {}) {
+        CBlock block{node::BlockAssembler{Chain(), m_node.mempool.get(), options, std::move(assembly)}.CreateNewBlock()->block};
+        block.hashMerkleRoot = BlockMerkleRoot(block);
+        return block;
+    }};
+    const CTxOut refunded{Params().min_withdrawal + MAIN_FEE, script};
+
+    // The template's block: the three that pay well, up to the bound; the coinbase pays their refunds.
+    {
+        const CBlock block{assembled()};
+        BOOST_CHECK_EQUAL(refunds_in(block), hivemind::MAX_TX_PAYOUTS_PER_BLOCK);
+        BOOST_CHECK(!InBlock(block, refund_txs[3]));
+        const std::vector<CTxOut>& paid{block.vtx[0]->vout};
+        BOOST_REQUIRE_GE(paid.size(), 1 + hivemind::MAX_TX_PAYOUTS_PER_BLOCK);
+        for (size_t i{1}; i <= hivemind::MAX_TX_PAYOUTS_PER_BLOCK; ++i) BOOST_CHECK(paid[i] == refunded);
+        check_valid(block);
+    }
+    // Peg actions of the sidechain's own that owe outputs: the same transactions, and what they owe paid first.
+    {
+        InstallHooks installed{std::make_unique<PegOwedHooks>(7)};
+        const CBlock block{assembled()};
+        BOOST_CHECK_EQUAL(refunds_in(block), hivemind::MAX_TX_PAYOUTS_PER_BLOCK);
+        const std::vector<CTxOut>& paid{block.vtx[0]->vout};
+        BOOST_REQUIRE_GE(paid.size(), 1 + 7 + hivemind::MAX_TX_PAYOUTS_PER_BLOCK);
+        for (size_t i{0}; i < 7; ++i) BOOST_CHECK(paid[1 + i] == (CTxOut{static_cast<CAmount>(7 + i), CScript() << OP_2}));
+        for (size_t i{1 + 7}; i < 1 + 7 + hivemind::MAX_TX_PAYOUTS_PER_BLOCK; ++i) BOOST_CHECK(paid[i] == refunded);
+        check_valid(block);
+    }
+    // No peg actions, and a filter that keeps the transactions of 100 refunds out: the other two, nothing paid.
+    {
+        InstallHooks installed{std::make_unique<NoPegHooks>()};
+        node::SidechainAssembly assembly;
+        assembly.peg = node::SidechainAssembly::Peg::NONE;
+        assembly.tx_filter = [](const CTransaction& tx) { return RefundsIn(tx) < 100; };
+        const CBlock block{assembled(assembly)};
+        BOOST_CHECK_EQUAL(refunds_in(block), 100U);
+        BOOST_CHECK(InBlock(block, refund_txs[2]) && InBlock(block, refund_txs[3]));
+        const std::vector<CTxOut>& outs{block.vtx[0]->vout};
+        BOOST_CHECK(std::all_of(outs.begin() + 1, outs.end(), [](const CTxOut& out) { return out.nValue == 0 && out.scriptPubKey.IsUnspendable(); }));
+        check_valid(block);
+    }
+
+    // Mined: the rest goes in the next block.
+    BOOST_CHECK_EQUAL(refunds_in(Mine()), hivemind::MAX_TX_PAYOUTS_PER_BLOCK);
+    const CBlock next{Mine()};
+    BOOST_CHECK(InBlock(next, refund_txs[3]));
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

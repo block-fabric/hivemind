@@ -495,10 +495,12 @@ bool State::ConnectBlock(const CBlock& block, int height, const Consensus::Sidec
     // the block before the one that committed to it.
     std::optional<PegStep> step;
     if (!Hooks().GetPegStep(block, mainchain, step, reject_reason)) return false;
-    std::vector<CTxOut> payouts, tx_payouts;
+    // What the sidechain's own peg actions owe is paid as what the transactions pay out, ahead of it, but
+    // kept apart until then: it takes none of the room the transactions have (hivemind::MAX_TX_PAYOUTS_PER_BLOCK).
+    std::vector<CTxOut> payouts, peg_owed, tx_payouts;
     bool main_pending{false};
     if (step) {
-        if (!Hooks().BeforePegStep(*this, block, height, *step, params, tx_payouts, reject_reason)) return false;
+        if (!Hooks().BeforePegStep(*this, block, height, *step, params, peg_owed, reject_reason)) return false;
         if (!ApplyPegStep(block, height, *step, params, mainchain, payouts, main_pending, reject_reason)) return false;
     } else if (std::any_of(block.vtx[0]->vout.begin(), block.vtx[0]->vout.end(), [](const CTxOut& out) { return ParseBundleCommitScript(out.scriptPubKey).has_value(); })) {
         // A bundle is started only with the peg actions.
@@ -510,7 +512,8 @@ bool State::ConnectBlock(const CBlock& block, int height, const Consensus::Sidec
 
     // The coinbase pays the deposits and the refunds, right after its first output, as many as a block
     // can; a block without the peg actions pays none, and what it gave rise to waits for one that has them.
-    payouts = TakePayouts(std::move(payouts), std::move(tx_payouts), step ? MAX_PAYOUTS_PER_BLOCK : 0);
+    peg_owed.insert(peg_owed.end(), tx_payouts.begin(), tx_payouts.end());
+    payouts = TakePayouts(std::move(payouts), std::move(peg_owed), step ? MAX_PAYOUTS_PER_BLOCK : 0);
     const std::vector<CTxOut>& coinbase{block.vtx[0]->vout};
     if (coinbase.size() < 1 + payouts.size()) {
         reject_reason = "bad-sc-payouts-missing";
