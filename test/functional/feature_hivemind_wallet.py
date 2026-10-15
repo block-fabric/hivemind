@@ -25,7 +25,6 @@ from test_framework.test_node import ErrorMatch, TestNode
 from test_framework.util import assert_equal, assert_raises_rpc_error, get_datadir_path, initialize_datadir
 from test_framework.wallet_util import generate_keypair
 
-NOT_ACCEPTED = "The transaction was not accepted into the mempool"
 
 
 class HivemindWalletTest(SidechainTest):
@@ -98,16 +97,23 @@ class HivemindWalletTest(SidechainTest):
         assert_equal(side.getaddressinfo(uncompressed)["ismine"], True)
         assert_raises_rpc_error(-4, "is uncompressed: it cannot sign Hivemind actions", side.transfervotecoin, uncompressed, bob, 1)
 
-        self.log.info("A transaction the mempool refuses is abandoned: its coins can be spent again")
+        self.log.info("What the chain refuses outright is not committed: no coin held, what comes next confirms")
         balance = side.getbalances()["mine"]["trusted"]
+        before = len(side.listtransactions("*", 1000))
         period = self.next_clock()[0]
         info = side.gethivemindinfo()
-        assert_raises_rpc_error(-4, NOT_ACCEPTED, side.createdecision, "x" * 401, period + 1)
-        assert_raises_rpc_error(-4, NOT_ACCEPTED, side.createdecision, "Too long a vote?", period + 1, info["maxvoteperiods"] + 1)
-        abandoned = {t["txid"] for t in side.listtransactions("*", 100) if t.get("abandoned")}
-        assert_equal(len(abandoned), 2)
+        # A text longer than the chain takes (400 bytes in UTF-8), counted in bytes.
+        assert_raises_rpc_error(-8, "The question is 1 to 400 bytes long (in UTF-8), not 401", side.createdecision, "x" * 401, period + 1)
+        assert_raises_rpc_error(-8, "The question is 1 to 400 bytes long (in UTF-8), not 402", side.createdecision, "Option 8: " + "\u03a9" * 196, period + 1)
+        assert_raises_rpc_error(-8, "The text of a market is 1 to 400 bytes long (in UTF-8), not 401", side.createmarket, "x" * 401, ["ab" * 32], 1)
+        # Any other rule of the chain the action breaks (hivemind::CheckTx), before the wallet keeps the transaction.
+        assert_raises_rpc_error(-8, "The chain would refuse this transaction (bad-hm-vote-periods)", side.createdecision, "Too long a vote?", period + 1, info["maxvoteperiods"] + 1)
+        assert_equal(len(side.listtransactions("*", 1000)), before)
         assert_equal(side.getbalances()["mine"]["trusted"], balance)
         assert_equal(side.getrawmempool(), [])
+        after_refused = side.createdecision("Listed after refused ones?", period + 1)
+        assert after_refused["txid"] in [t["txid"] for t in self.mine_txs()["tx"]]
+        assert_equal(side.gettransaction(after_refused["txid"])["confirmations"], 1)
 
         self.log.info("Decisions to vote on, and a market")
         # From the start of a period, so that all of what follows in it fits.
@@ -118,8 +124,8 @@ class HivemindWalletTest(SidechainTest):
         rolled = side.createdecision("Put off?", period)["id"]
         self.mine_txs()
         market = side.createmarket("One", [one], 1)["id"]
-        # A fee beyond what the chain takes: the wallet sends it, the mempool refuses it.
-        assert_raises_rpc_error(-4, NOT_ACCEPTED, side.createmarket, "Dear", [one], 1, 1001)
+        # A fee beyond what the chain takes: refused before the wallet keeps the transaction.
+        assert_raises_rpc_error(-8, "The chain would refuse this transaction (bad-hm-fee)", side.createmarket, "Dear", [one], 1, 1001)
         self.mine_txs()
         assert_raises_rpc_error(-8, "The number of shares must not be zero", side.quotetrade, market, 1, 0)
         assert_raises_rpc_error(-5, "Shares are held by a P2WPKH address", side.buyshares, market, 1, 1, None, alice_pkh)

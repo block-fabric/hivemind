@@ -107,6 +107,11 @@ std::pair<CTransactionRef, uint32_t> SendAction(CWallet& wallet, T action, CAmou
         if (!wallet.SignTransaction(mtx)) throw JSONRPCError(RPC_WALLET_ERROR, "Signing the transaction failed");
 
         CTransactionRef tx{MakeTransactionRef(std::move(mtx))};
+        // What the chain refuses outright is not committed: a transaction the wallet keeps but no block takes would
+        // hold its coins, and the change of every later one would be built on it.
+        if (std::string reject_reason; !hivemind::CheckTx(*tx, wallet.chain().getHivemindParams(), reject_reason)) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("The chain would refuse this transaction (%s)", reject_reason));
+        }
         wallet.CommitTransaction(tx, /*replaces_txid=*/std::nullopt, /*comment=*/std::nullopt, /*comment_to=*/std::nullopt);
         return {std::move(tx), index};
     }()};
@@ -242,6 +247,9 @@ RPCMethod createdecision()
     if (!pwallet) return UniValue::VNULL;
     hivemind::ListDecision list;
     list.text = request.params[0].get_str();
+    if (const uint32_t max{pwallet->chain().getHivemindParams().max_text_size}; list.text.empty() || list.text.size() > max) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("The question is 1 to %u bytes long (in UTF-8), not %u", max, list.text.size()));
+    }
     list.event_period = request.params[1].getInt<uint32_t>();
     list.vote_periods = request.params[2].isNull() ? 1 : request.params[2].getInt<uint16_t>();
     list.scaled = !request.params[3].isNull() && request.params[3].get_bool();
@@ -292,6 +300,9 @@ RPCMethod createmarket()
     if (!pwallet) return UniValue::VNULL;
     hivemind::OpenMarket open;
     open.text = request.params[0].get_str();
+    if (const uint32_t max{pwallet->chain().getHivemindParams().max_text_size}; open.text.empty() || open.text.size() > max) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("The text of a market is 1 to %u bytes long (in UTF-8), not %u", max, open.text.size()));
+    }
     for (const UniValue& id : request.params[1].get_array().getValues()) open.decisions.push_back(ParseHashV(id, "decision"));
     const auto params{pwallet->chain().getHivemindParams()};
     if (open.decisions.empty() || open.decisions.size() > params.max_market_decisions) throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("A market is about 1 to %u decisions", params.max_market_decisions));
