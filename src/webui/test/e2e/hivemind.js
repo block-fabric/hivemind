@@ -229,10 +229,10 @@
     await go('markets');
     await sleep(900);
     await shot('hm-workspace-markets');
-    T().savePrefs({ layout: 'sidebar' });
-    await go('voting');
-    await sleep(900);
-    await shot('hm-compact-voting');
+    // Home in every layout (the Compact layout is gone): the workspace's Home area.
+    await go('home');
+    await sleep(1200);
+    await shot('hm-workspace-home');
     T().savePrefs({ layout: 'dashboard', theme: 'ocean' });
     await go('create');
     await sleep(900);
