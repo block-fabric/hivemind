@@ -471,6 +471,44 @@ RPCMethod listpositions()
     };
 }
 
+RPCMethod getballot()
+{
+    return RPCMethod{
+        "getballot",
+        "Returns the ballot an account sealed for the votes that close in a period, while it is not revealed: the\n"
+        "decisions it covers, all of which are revealed together (revealballot).",
+        {
+            {"account", RPCArg::Type::STR, RPCArg::Optional::NO, "The address of the account"},
+            {"closeperiod", RPCArg::Type::NUM, RPCArg::Optional::NO, "The period the votes of the ballot close in"},
+        },
+        {
+            RPCResult{"if the account has a ballot for the period", RPCResult::Type::OBJ, "", "",
+            {
+                {RPCResult::Type::NUM, "closeperiod", "The period"},
+                {RPCResult::Type::ARR, "decisions", "The decisions of the ballot, in its order", {{RPCResult::Type::STR_HEX, "", "A decision"}}},
+            }},
+            RPCResult{"otherwise", RPCResult::Type::NONE, "", ""},
+        },
+        RPCExamples{HelpExampleCli("getballot", "\"address\" 12")},
+        [&](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
+{
+    LOCK(::cs_main);
+    const View view{GetView(request)};
+    const Account account{ParseAccount(request.params[0])};
+    const int64_t period{request.params[1].getInt<int64_t>()};
+    if (period < 0 || period > std::numeric_limits<uint32_t>::max()) throw JSONRPCError(RPC_INVALID_PARAMETER, "No such period");
+    const auto ballot{view.state.GetBallot(hivemind::BallotKey{static_cast<uint32_t>(period), account})};
+    if (!ballot) return UniValue::VNULL;
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("closeperiod", period);
+    UniValue decisions(UniValue::VARR);
+    for (const hivemind::Id& id : ballot->decisions) decisions.push_back(id.GetHex());
+    result.pushKV("decisions", std::move(decisions));
+    return result;
+},
+    };
+}
+
 } // namespace
 
 void RegisterHivemindRPCCommands(CRPCTable& t)
@@ -484,6 +522,7 @@ void RegisterHivemindRPCCommands(CRPCTable& t)
         {"hivemind", &quotetrade},
         {"hivemind", &listreputation},
         {"hivemind", &listpositions},
+        {"hivemind", &getballot},
     };
     for (const auto& c : commands) {
         t.appendCommand(c.name, &c);

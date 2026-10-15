@@ -85,6 +85,7 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "buyshares", 1, "state" },
     { "sealballot", 1, "votes" },
     { "revealballot", 1, "votes" },
+    { "getballot", 1, "closeperiod" },
     { "listreputation", 0, "count" },
     { "buyshares", 2, "shares" },
     { "buyshares", 3, "maxcost" },

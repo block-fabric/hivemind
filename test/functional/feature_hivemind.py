@@ -370,6 +370,11 @@ class HivemindTest(SidechainTest):
         assert_equal(side.sealballot(alice, votes)["closeperiod"], period + 1)
         other.sealballot(bob, votes)
         self.mine_txs()
+        # The ballot as the chain keeps it: its decisions, in order, until it is revealed (getballot), so that an app
+        # that lost the record of the answers can still reveal it, with the answers alone.
+        assert_equal(side.getballot(alice, period + 1), {"closeperiod": period + 1, "decisions": [first["id"], second["id"]]})
+        assert_equal(side.getballot(alice, period + 2), None)
+        assert_raises_rpc_error(-8, "No such period", side.getballot, alice, -1)
         assert_equal(len(side.getdecision(first["id"])["votes"]), 2)
         assert all(not v["revealed"] for v in side.getdecision(second["id"])["votes"])
         assert_raises_rpc_error(-1, "revealed in the reveal phase", side.revealballot, alice, votes)
@@ -379,6 +384,7 @@ class HivemindTest(SidechainTest):
         side.revealballot(alice, votes)
         other.revealballot(bob, votes)
         self.mine_txs()
+        assert_equal(side.getballot(alice, period + 1), None)
         assert_equal({v["voter"]: v.get("answer") for v in side.getdecision(first["id"])["votes"]}, {alice: 1, bob: 1})
         assert_equal({v["voter"]: v.get("answer") for v in side.getdecision(second["id"])["votes"]}, {alice: 7, bob: 7})
         self.advance(period + 2)
