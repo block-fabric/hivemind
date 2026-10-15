@@ -16,6 +16,7 @@
   import { clockOf, periodEnd, revealStart, titleWithoutCategory, type Decision, type DecisionStatus } from '../hm/model';
   import { hm, startHivemind, ownItems } from '../hm/store.svelte';
   import { node, wallets } from '../../lib/state.svelte';
+  import { every } from '../../lib/poll';
 
   $effect(() => startHivemind());
 
@@ -52,10 +53,7 @@
   const marketsOn = (id: string) => hm.markets.filter((m) => m.decisions.includes(id));
 
   let now = $state(Math.floor(Date.now() / 1000));
-  $effect(() => {
-    const timer = setInterval(() => (now = Math.floor(Date.now() / 1000)), 1000);
-    return () => clearInterval(timer);
-  });
+  $effect(() => every(1000, () => (now = Math.floor(Date.now() / 1000))));
   const clock = $derived(hm.info ? clockOf(hm.info, now, node.tip?.height ?? 0) : null);
   /** The periods ahead with what comes up in them: answers known, votes that end. */
   const calendar = $derived.by(() => {

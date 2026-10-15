@@ -4,6 +4,7 @@
   import { t } from '../../lib/i18n.svelte';
   import { node } from '../../lib/state.svelte';
   import { untilIn, type HivemindInfo } from './model';
+  import { every } from '../../lib/poll';
 
   /**
    * phrase: the words around the time, so that a deadline that came reads as a sentence ("ends now", not "ends in
@@ -12,10 +13,7 @@
   let { info, target, urgent = 0, phrase }: { info: HivemindInfo; target: number; urgent?: number; phrase?: 'ends' | 'start' | 'starts' | 'in' | 'closes' } = $props();
 
   let now = $state(Math.floor(Date.now() / 1000));
-  $effect(() => {
-    const timer = setInterval(() => (now = Math.floor(Date.now() / 1000)), 1000);
-    return () => clearInterval(timer);
-  });
+  $effect(() => every(1000, () => (now = Math.floor(Date.now() / 1000))));
   const height = $derived(node.tip?.height ?? 0);
   const left = $derived(info.periodblocks ? target - (height + 1) : target - now);
   const words = $derived(untilIn(info, target, now, height));

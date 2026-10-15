@@ -12,6 +12,7 @@
 import { request } from '../../lib/bridge';
 import { errorText, inform } from '../../lib/dialogs.svelte';
 import { t } from '../../lib/i18n.svelte';
+import { every } from '../../lib/poll';
 import { host, rpc } from '../../lib/rpc';
 import { node, toast, wallets } from '../../lib/state.svelte';
 import { voteStage, type Decision, type Holding, type HivemindInfo, type Market, type TradeRecord, type WalletPosition } from './model';
@@ -513,7 +514,7 @@ async function refreshOnce(): Promise<void> {
 
 let lastTip = '';
 let lastWallet: string | null | undefined;
-let timer: ReturnType<typeof setInterval> | null = null;
+let timer: (() => void) | null = null;
 
 /**
  * Follow the chain: a refresh with every new block and with a change of wallet, and every 15 seconds (a
@@ -531,16 +532,17 @@ export function startHivemind(): void {
   tick();
   if (timer) return;
   let ticks = 0;
-  timer = setInterval(() => {
+  // Resting while the window is hidden, as the timers of the pages (lib/poll.ts).
+  timer = every(3000, () => {
     tick();
     // Periods counted in time turn without a block: a look every 15 seconds.
     if (++ticks % 5 === 0) void refreshHivemind();
-  }, 3000);
+  });
 }
 
 /** For the tests. */
 export function resetHivemind(): void {
-  if (timer) clearInterval(timer);
+  timer?.();
   timer = null;
   lastTip = '';
   lastWallet = undefined;
