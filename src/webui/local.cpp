@@ -108,7 +108,7 @@ std::set<std::string> KeyedRpcMethods()
     return {"createdecision", "createmarket", "buyshares", "sellshares", "transfervotecoin", "sealvote", "revealvote", "sealballot", "revealballot"};
 }
 
-void RegisterHost(Bridge& bridge, NodeFn node)
+void RegisterHost(Bridge& bridge, NodeFn node, guard::ConfirmFn confirm)
 {
     // The answers of the votes this app sealed (the wallet needs the answer again to reveal it), and the rest of
     // the journal of the app (trades, prices, votes revealed, reminders): each in a file of its own in the data
@@ -127,6 +127,7 @@ void RegisterHost(Bridge& bridge, NodeFn node)
             return UniValue{true};
         }, Bridge::Thread::LONG);
     }
+    (void)confirm;
 }
 
 } // namespace webui::local
