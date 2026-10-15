@@ -1,0 +1,210 @@
+/* The pages of Hivemind: shared pieces, in the colour tokens of themes.css only (text in the text
+   tokens; the colours of the states are for lines, dots and bars, never for text). */
+
+/* The colour of a state of a market: --hm-c, set by .hm-c0 ... .hm-c7 (states beyond take them again). */
+.hm-c0 { --hm-c: var(--accent); }
+.hm-c1 { --hm-c: var(--negative); }
+.hm-c2 { --hm-c: var(--warning); }
+.hm-c3 { --hm-c: var(--link); }
+.hm-c4 { --hm-c: var(--positive); }
+.hm-c5 { --hm-c: var(--text-muted); }
+.hm-c6 { --hm-c: var(--accent-strong); }
+.hm-c7 { --hm-c: var(--line-strong); }
+
+.hm-dot {
+  display: inline-block;
+  flex: none;
+  width: 0.62rem;
+  height: 0.62rem;
+  border-radius: 50%;
+  background: var(--hm-c);
+}
+
+/* A chance, as a bar under the name of its state. */
+.hm-bar {
+  position: relative;
+  height: 0.42rem;
+  border-radius: 999px;
+  background: var(--raised);
+  overflow: hidden;
+}
+.hm-bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--hm-c);
+}
+
+/* Chips to pick from: filters, amounts. */
+.hm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.hm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 1.9rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.hm-chip:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.hm-chip[aria-pressed='true'],
+.hm-chip[aria-checked='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.hm-chip .count {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A grid of cards (markets, decisions to vote on). */
+.hm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(19rem, 100%), 1fr));
+  gap: 0.9rem;
+}
+
+/* Figures in a row. */
+.hm-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(10.5rem, 100%), 1fr));
+  gap: 0.8rem;
+}
+.hm-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.85rem 1rem;
+  min-width: 0;
+}
+.hm-figure strong {
+  font-size: 1.35rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A stage of a decision or a market. */
+.hm-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  background: var(--raised);
+  color: var(--text-muted);
+}
+.hm-stage.live {
+  background: var(--accent-soft);
+  color: var(--positive);
+}
+.hm-stage.vote {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.hm-stage.done {
+  background: var(--raised);
+  color: var(--text-muted);
+}
+.hm-stage.bad {
+  background: var(--danger-soft);
+  color: var(--negative);
+}
+
+/* Values that rise or fall. */
+.hm-up {
+  color: var(--positive);
+}
+.hm-down {
+  color: var(--negative);
+}
+
+/* A table of the pages, the kit's sidechain table look. */
+.hm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.hm-table th {
+  padding: 0.5rem 0.8rem;
+  text-align: left;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.hm-table td {
+  padding: 0.55rem 0.8rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+.hm-table tr:last-child td {
+  border-bottom: 0;
+}
+.hm-table .end {
+  text-align: right;
+}
+.hm-table tbody tr.click {
+  cursor: pointer;
+}
+.hm-table tbody tr.click:hover,
+.hm-table tbody tr.click:focus-visible {
+  background: var(--surface-2);
+  outline: none;
+}
+.hm-table .cut {
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hm-wrap {
+  overflow-x: auto;
+}
+
+/* A line of help under a field, a problem of a form. */
+.hm-help {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+.hm-problems {
+  margin: 0;
+  padding: 0.6rem 0.9rem 0.6rem 2rem;
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-m);
+  background: var(--warning-soft);
+  color: var(--text);
+  font-size: 0.88rem;
+}
+.hm-empty {
+  margin: 0;
+  padding: 1.6rem 1.2rem;
+  text-align: center;
+  color: var(--text-muted);
+}
