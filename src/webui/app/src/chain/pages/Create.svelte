@@ -419,6 +419,7 @@
     color: var(--on-accent);
   }
   .wizard .panel-body {
+    padding-top: 1.2rem;
     display: flex;
     flex-direction: column;
     gap: 0.9rem;

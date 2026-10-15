@@ -296,10 +296,10 @@
   }
   .state {
     margin: 0;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.4rem;
+    line-height: 1.8;
+  }
+  .state .hm-stage {
+    margin-right: 0.35rem;
   }
   tr.current td {
     background: var(--accent-soft);
