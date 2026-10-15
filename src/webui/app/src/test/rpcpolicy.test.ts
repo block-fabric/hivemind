@@ -6,6 +6,8 @@ import { describe, expect, it } from 'vitest';
 
 const SRC = join(__dirname, '..');
 const POLICY = readFileSync(join(__dirname, '../../../rpcpolicy.cpp'), 'utf8');
+// The methods of this chain's own pages, which the policy adds (src/webui/local.cpp).
+const LOCAL = readFileSync(join(__dirname, '../../../local.cpp'), 'utf8');
 
 function sources(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -18,13 +20,16 @@ function sources(dir: string): string[] {
 
 function allowed(): Set<string> {
   const body = POLICY.slice(POLICY.indexOf('methods{'), POLICY.indexOf('return methods;'));
-  return new Set([...body.matchAll(/\{"([a-z0-9_]+)", (?:WORKER|LONG)\}/g)].map((m) => m[1]));
+  const local = LOCAL.slice(LOCAL.indexOf('RpcMethods()'), LOCAL.indexOf('KeyedRpcMethods()'));
+  return new Set([...body.matchAll(/\{"([a-z0-9_]+)", (?:WORKER|LONG)\}/g), ...local.matchAll(/\{"([a-z0-9_]+)", (?:Bridge::Thread::)?(?:WORKER|LONG)\}/g)].map((m) => m[1]));
 }
 
 function keyed(): Set<string> {
   const fn = POLICY.slice(POLICY.indexOf('bool KeyedWalletRpc'));
   const list = fn.slice(fn.indexOf('methods{'), fn.indexOf('};'));
-  return new Set([...list.matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1]));
+  const local = LOCAL.slice(LOCAL.indexOf('KeyedRpcMethods()'), LOCAL.indexOf('void RegisterHost'));
+  const own = local.slice(local.indexOf('return'));
+  return new Set([...list.matchAll(/"([a-z0-9_]+)"/g), ...own.matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1]));
 }
 
 /** The methods named in a call of the RPC client, of walletRpc, or of withKeys. */
