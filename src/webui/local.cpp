@@ -38,10 +38,13 @@ fs::path StorePath(interfaces::Node& node, const std::string& name)
 
 UniValue ReadStore(const fs::path& path)
 {
-    std::ifstream file{path.std_path(), std::ios::binary};
-    if (!file) return UniValue{};
     std::ostringstream text;
-    text << file.rdbuf();
+    {
+        // Closed before anything else: on Windows an open file cannot be renamed.
+        std::ifstream file{path.std_path(), std::ios::binary};
+        if (!file) return UniValue{};
+        text << file.rdbuf();
+    }
     UniValue value;
     if (!value.read(text.str()) || !value.isObject()) {
         // Kept aside rather than lost: what the user may need to reveal a vote by hand.
