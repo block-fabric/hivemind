@@ -124,7 +124,8 @@
   }
   .pairs {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    /* The labels keep their longest word; the values wrap when the card is narrow (as the kit's cards). */
+    grid-template-columns: minmax(min-content, 1fr) minmax(0, auto);
     gap: 0.35rem 1rem;
     margin: 0;
     padding-top: 0.6rem;
@@ -133,8 +134,11 @@
   .pairs dt {
     color: var(--text-muted);
     font-size: 0.86rem;
+    overflow-wrap: break-word;
   }
   .pairs dd {
+    min-width: 0;
+    overflow-wrap: anywhere;
     margin: 0;
     text-align: right;
     font-weight: 600;
