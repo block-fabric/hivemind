@@ -35,6 +35,7 @@ import {
   pnlOf,
   previewTrade,
   revealStart,
+  periodAt,
   periodEnd,
   sharesForBudget,
   statePayout,
@@ -45,6 +46,9 @@ import {
   type Market,
 } from './hm/model';
 import { hm, notePrices, resetHivemind, sanitizeJournal } from './hm/store.svelte';
+import Countdown from './hm/Countdown.svelte';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { setTransport, type BridgeRequest } from '../lib/bridge';
 import { buildCommands, menuSections } from '../lib/commands.svelte';
 import { dialogs } from '../lib/dialogs.svelte';
@@ -171,6 +175,8 @@ async function fakeNode(r: BridgeRequest): Promise<unknown> {
       return true;
     case 'getballot':
       return ballotOnChain;
+    case 'getaddressinfo':
+      return { address: p[0], ismine: p[0] === ME };
     case 'prefs.get':
       return prefsStore;
     case 'prefs.set':
@@ -247,7 +253,8 @@ async function answer(choice: string) {
   await fireEvent.click(document.querySelector(`button[data-choice="${choice}"]`)!);
 }
 const called = (method: string) => calls.filter((c) => c.method === method);
-const loaded = () => waitFor(() => expect(hm.loaded && hm.markets.length > 0).toBe(true));
+// Loaded whole: the markets first, then what the wallet holds (the first refresh shows the markets at once).
+const loaded = () => waitFor(() => expect(hm.loaded && hm.markets.length > 0 && hm.wallet === wallets.current).toBe(true));
 
 describe('the market maker, as the chain works it out', () => {
   it('prices the states by their shares, and costs a trade by the difference', () => {
@@ -421,7 +428,7 @@ describe('the journal in the files of the host (audit port-1 #1)', () => {
     sealsFail = true;
     const kept = noteSealed({ wallet: 'w', account: ME, decision: id('2'), answer: 'no', close: 3, time: 1, txid: id('d') });
     await waitFor(() => expect(dialogs.queue[0]?.title).toBe('The answer of your vote could not be saved'));
-    expect(dialogs.queue[0]?.informative).toContain(': no');
+    expect((dialogs.queue[0] as { informative?: string } | undefined)?.informative).toContain(': no');
     await answer('ok');
     expect(await kept).toBe(false);
   });
@@ -434,6 +441,35 @@ describe('the journal in the files of the host (audit port-1 #1)', () => {
     expect((stores.seals as { sealed: Record<string, unknown> }).sealed.k).toBeTruthy();
     expect((stores.journal as { trades: unknown[] }).trades.length).toBe(1);
     await waitFor(() => expect(prefsStore.hivemind).toBeNull());
+  });
+});
+
+describe('the fixes of the audit of the port, round 1', () => {
+  it('#8: the period of a time or a date, in time or in blocks; never one that is over', () => {
+    const timed: HivemindInfo = { ...INFO, periodblocks: undefined, periodseconds: 86400, starttime: 1_700_000_000, period: 10 };
+    expect(periodAt(timed, 1_700_000_000 + 12.5 * 86400, 0, 0, 60)).toBe(12);
+    expect(periodAt(timed, 1_700_000_000, 0, 0, 60)).toBe(10);
+    // 6 blocks a period, a block a minute: an hour from height 20 is height 81, period 13.
+    expect(periodAt(INFO, 1000 + 3600, 1000, 20, 60)).toBe(13);
+  });
+
+  it('#10: a deadline that came reads as a sentence ("ends now", not "ends in now")', () => {
+    const past = render(Countdown, { props: { info: INFO, target: 0, phrase: 'ends' } });
+    expect(past.container.textContent).toBe('ends now');
+    past.unmount();
+    const ahead = render(Countdown, { props: { info: INFO, target: 30, phrase: 'ends' } });
+    expect(ahead.container.textContent).toBe('ends in 9 blocks');
+  });
+
+  it('#11: the count of a chip pressed is in the colour of the text, not the faint one (4.45:1 in Light)', () => {
+    const css = readFileSync(join(__dirname, 'hm/hm.css'), 'utf8');
+    expect(css).toMatch(/\.hm-chip\[aria-pressed='true'\] \.count,[^{]*\{\s*color: var\(--text\);/);
+  });
+
+  it('#9: in a narrow panel the tables of Hivemind are cards, every cell under the words of its column', () => {
+    const css = readFileSync(join(__dirname, 'hm/hm.css'), 'utf8');
+    expect(css).toMatch(/\.hm-wrap \{[^}]*container-type: inline-size;/);
+    expect(css).toMatch(/@container \(max-width: 36rem\)[\s\S]*table\.hm-table td\[data-label\]::before/);
   });
 });
 
@@ -626,7 +662,7 @@ describe.runIf(CHAIN.name === 'Hivemind')('the pages of Hivemind', () => {
     const selects = screen.getAllByRole('combobox', { name: 'The answer you sealed' });
     await fireEvent.change(selects[0], { target: { value: 'yes' } });
     await fireEvent.click(document.querySelector(`#reveal-${id('2').slice(0, 8)}`)!);
-    await waitFor(() => expect(dialogs.queue[0]?.message).toMatch(/ballot of 2 decisions/));
+    await waitFor(() => expect((dialogs.queue[0] as { message?: string } | undefined)?.message).toMatch(/ballot of 2 decisions/));
     await answer('ok');
     expect(called('revealballot').length).toBe(0);
     await fireEvent.input(screen.getByRole('textbox', { name: 'The answer you sealed' }), { target: { value: '4' } });
@@ -634,6 +670,93 @@ describe.runIf(CHAIN.name === 'Hivemind')('the pages of Hivemind', () => {
     await waitFor(() => expect(called('revealballot').length).toBe(1));
     expect(called('revealballot')[0].params).toEqual([ME, { [id('2')]: 'yes', [id('3')]: '4' }]);
     expect(called('revealvote').length).toBe(0);
+  });
+
+  it('#2: a title that turns text around cannot turn the buy confirmation around', async () => {
+    markets[0].text = '[Weather] \u202Eevil RLO: ?sey lliw';
+    go('markets', `m-${id('a')}`);
+    render(Markets);
+    render(DialogHost);
+    await loaded();
+    const trade = await waitFor(() => screen.getByRole('region', { name: 'Trade' }));
+    await fireEvent.click(within(trade).getByRole('radio', { name: /Yes/ }));
+    await fireEvent.input(trade.querySelector('#trade-amount')!, { target: { value: '0.5' } });
+    await waitFor(() => expect(within(trade).getByText('Quoted by the node just now.')).toBeTruthy());
+    await fireEvent.click(trade.querySelector('#trade-place')!);
+    await waitFor(() => expect(dialogs.queue[0]?.title).toBe('Buy shares'));
+    const message = (dialogs.queue[0] as { message: string }).message;
+    // The title between FSI and PDI; the amounts of the app after it, outside.
+    expect(message).toContain('\u2068[Weather] \u202Eevil RLO: ?sey lliw\u2069');
+    expect(message).toMatch(/\u2069[^\u2068\u2069]*pays at most \d/);
+  });
+
+  it('#7: "yours" by the author on the chain (getaddressinfo), not only what this app recorded', async () => {
+    decisions = decisions.map((d) => (d.id === id('5') ? { ...d, author: ME } : d));
+    markets = markets.map((m) => (m.id === id('b') ? { ...m, author: ME } : m));
+    const list = render(Decisions);
+    await loaded();
+    await waitFor(() => expect(hm.authored.sort()).toEqual([id('5'), id('b')].sort()));
+    expect(hm.journal.mine).toEqual({});
+    await fireEvent.click(screen.getByRole('button', { name: 'Listed by this wallet' }));
+    await waitFor(() => expect(within(screen.getByRole('table', { name: 'Decisions' })).getAllByText('yours').length).toBe(1));
+    // Each author is asked once.
+    const asked = called('getaddressinfo').map((c) => (c.params as string[])[0]);
+    expect(new Set(asked).size).toBe(asked.length);
+    list.unmount();
+    render(Markets);
+    await fireEvent.click(await waitFor(() => screen.getByRole('button', { name: /Mine/ })));
+    await waitFor(() => expect(screen.getAllByRole('listitem').filter((li) => li.textContent?.includes('The cup')).length).toBe(1));
+  });
+
+  it('#8: Portfolio sells from a row (Sell… opens the market on the Sell side), and its rows take the keyboard', async () => {
+    render(Portfolio);
+    await loaded();
+    const table = await waitFor(() => screen.getByRole('table', { name: 'Positions' }));
+    const row = within(table).getAllByRole('row')[1] as HTMLTableRowElement;
+    expect(row.tabIndex).toBe(0);
+    // In a narrow panel each cell carries the words of its column.
+    expect((within(row).getAllByRole('cell')[4] as HTMLElement).dataset.label).toBe('Worth now');
+    await fireEvent.click(within(row).getByRole('button', { name: 'Sell…' }));
+    expect(nav.tab).toBe(`m-${id('a')}`);
+    const { tradeIntent } = await import('./hm/store.svelte');
+    expect({ ...tradeIntent }).toEqual({ market: id('a'), state: 1, side: 'sell' });
+    // Enter on a row opens its market.
+    go('portfolio');
+    tradeIntent.market = '';
+    row.focus();
+    await fireEvent.keyDown(row, { key: 'Enter' });
+    expect(nav.tab).toBe(`m-${id('a')}`);
+  });
+
+  it('#8: Create takes the time of the answer as an amount of time or a date too', async () => {
+    go('create', 'market');
+    render(Create);
+    await loaded();
+    await fireEvent.click(screen.getByRole('radio', { name: /Yes or no/ }));
+    await fireEvent.click(document.querySelector('#create-next')!);
+    await fireEvent.input(document.querySelector('#create-question')!, { target: { value: 'Will it happen?' } });
+    await fireEvent.click(document.querySelector('#create-next')!);
+    await fireEvent.click(screen.getByRole('radio', { name: 'After some time' }));
+    // An hour from height 20 at a block a minute (the info of the app): height 81, period 13.
+    await fireEvent.input(screen.getByLabelText('Time from now'), { target: { value: '1' } });
+    await fireEvent.change(screen.getByLabelText('Unit of time'), { target: { value: 'hours' } });
+    await waitFor(() => expect(screen.getByText(/from now: period 13/)).toBeTruthy());
+    await fireEvent.click(screen.getByRole('radio', { name: 'On a date' }));
+    expect(screen.getByLabelText('Date')).toBeTruthy();
+  });
+
+  it('#10: the markets show before the votes and the wallet are asked for', async () => {
+    let release: () => void = () => undefined;
+    const slow = new Promise<void>((r) => (release = r));
+    setTransport(async (r) => {
+      if (r.method === 'getwalletpositions') await slow;
+      return fakeNode(r);
+    });
+    render(Markets);
+    await waitFor(() => expect(screen.getAllByRole('listitem').some((li) => li.textContent?.includes('Rain in Paris'))).toBe(true));
+    expect(hm.positions).toEqual([]);
+    release();
+    await waitFor(() => expect(hm.positions.length).toBe(1));
   });
 
   it('Votecoin: the holdings, a transfer checked against the least holding, then sent', async () => {

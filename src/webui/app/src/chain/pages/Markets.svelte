@@ -13,7 +13,7 @@
   import OutcomeName from '../hm/OutcomeName.svelte';
   import PriceChart from '../hm/PriceChart.svelte';
   import { categoryOf, formatChance, formatUnits, marketKind, outcomesOf, periodEnd, titleWithoutCategory, volume, type Market, type MarketKind } from '../hm/model';
-  import { decisionMap, hm, priceSeries, startHivemind } from '../hm/store.svelte';
+  import { decisionMap, hm, priceSeries, startHivemind, ownItems } from '../hm/store.svelte';
 
   $effect(() => startHivemind());
 
@@ -30,7 +30,7 @@
   let sort = $state<'newest' | 'volume' | 'liquidity' | 'closing' | 'uncertain'>('newest');
 
   const decisions = $derived(decisionMap());
-  const mineIds = $derived(new Set([...hm.positions.map((p) => p.market), ...(wallets.current !== null ? (hm.journal.mine[wallets.current] ?? []) : [])]));
+  const mineIds = $derived(new Set([...hm.positions.map((p) => p.market), ...ownItems(wallets.current)]));
   const counts = $derived({
     trading: hm.markets.filter((m) => m.status === 'trading').length,
     closed: hm.markets.filter((m) => m.status === 'closed').length,
@@ -78,7 +78,7 @@
         <h1>Markets</h1>
         {#if hm.info}
           <p class="muted sub">
-            Period {hm.info.period} · {hm.info.phase === 'reveal' ? 'votes are being revealed' : 'votes are being sealed'} · it ends in <Countdown info={hm.info} target={periodEnd(hm.info, hm.info.period)} />
+            Period {hm.info.period} · {hm.info.phase === 'reveal' ? 'votes are being revealed' : 'votes are being sealed'} · it <Countdown info={hm.info} target={periodEnd(hm.info, hm.info.period)} phrase="ends" />
           </p>
         {/if}
       </div>
@@ -173,8 +173,8 @@
             {/if}
             <span class="foot faint small">
               <span class="num">{formatUnits(volume(m), 2)} shares sold</span>
-              <span class="num">depth {formatUnits(m.liquidity, 2)}</span>
-              {#if m.status === 'trading' && m.tradinguntil !== undefined && hm.info}<span>closes in <Countdown info={hm.info} target={periodEnd(hm.info, m.tradinguntil)} /></span>{/if}
+              <span class="num">liquidity {formatUnits(m.liquidity, 2)}</span>
+              {#if m.status === 'trading' && m.tradinguntil !== undefined && hm.info}<span><Countdown info={hm.info} target={periodEnd(hm.info, m.tradinguntil)} phrase="closes" /></span>{/if}
             </span>
           </button></li>
         {/each}

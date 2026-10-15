@@ -350,6 +350,22 @@ export function revealStart(info: HivemindInfo, n: number): number {
   return (info.starttime ?? 0) + n * ps + Math.ceil((ps * 2) / 3);
 }
 
+/**
+ * The period a moment falls in (seconds): on a chain whose periods are counted in time, the period of that time; on
+ * a test chain counted in blocks, the period of the height the chain reaches by then at `spacing` seconds a block.
+ * Never one that is over.
+ */
+export function periodAt(info: HivemindInfo, when: number, now: number, height: number, spacing: number): number {
+  let n: number;
+  if (info.periodblocks) {
+    const h = height + 1 + Math.max(0, Math.ceil((when - now) / Math.max(1, spacing)));
+    n = Math.floor(h / info.periodblocks);
+  } else {
+    n = Math.floor((when - (info.starttime ?? 0)) / Math.max(1, info.periodseconds ?? 1));
+  }
+  return Math.max(info.period, n);
+}
+
 /** The clock now: `now` in seconds of the time, `height` of the tip (blocks are counted for the next block). */
 export function clockOf(info: HivemindInfo, now: number, height: number): Clock {
   const blocks = !!info.periodblocks;

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { selectable, stacked } from '../../lib/actions';
   // The shares of the wallet: every position, what it is worth at the price now, what it pays if its
   // outcome comes true, what it cost and what it made (of the trades this app placed: the chain keeps
   // no history of trades); and those trades. The "My positions" tab of the Qt window, with the profit
@@ -12,7 +13,13 @@
   import '../hm/hm.css';
   import OutcomeName from '../hm/OutcomeName.svelte';
   import { formatChance, formatUnits, outcomesOf, pnlOf, titleWithoutCategory } from '../hm/model';
-  import { decisionMap, hm, startHivemind, tradesOf } from '../hm/store.svelte';
+  import { decisionMap, hm, openTrade as intend, startHivemind, tradesOf } from '../hm/store.svelte';
+
+  /** Open the market of a position on a side of its outcome. */
+  function openTrade(market: string, state: number, side: 'buy' | 'sell') {
+    intend(market, state, side);
+    go('markets', `m-${market}`);
+  }
 
   $effect(() => startHivemind());
 
@@ -55,11 +62,11 @@
         <p class="hm-empty">This wallet holds no shares. Buy some in a market.</p>
       {:else}
         <div class="hm-wrap">
-          <table class="hm-table" aria-label="Positions">
-            <thead><tr><th>Market</th><th>Outcome</th><th class="end">Shares</th><th class="end">Chance</th><th class="end">Worth now</th><th class="end">Paid</th><th class="end">Profit or loss</th><th>Stage</th></tr></thead>
+          <table class="hm-table" use:stacked aria-label="Positions">
+            <thead><tr><th>Market</th><th>Outcome</th><th class="end">Shares</th><th class="end">Chance</th><th class="end">Worth now</th><th class="end">Paid</th><th class="end">Profit or loss</th><th>Stage</th><th><span class="sr-only">Trade</span></th></tr></thead>
             <tbody>
               {#each rows as r (r.market + r.account + r.state)}
-                <tr class="click" onclick={() => go('markets', `m-${r.market}`)}>
+                <tr class="click" onclick={() => openTrade(r.market, r.state, 'buy')} use:selectable={() => openTrade(r.market, r.state, 'buy')}>
                   <td class="cut"><SafeText text={titleWithoutCategory(r.m?.text ?? r.market)} /></td>
                   <td>{#if r.outcome}<OutcomeName outcome={r.outcome} />{/if}</td>
                   <td class="end num">{formatUnits(r.shares)}</td>
@@ -68,6 +75,7 @@
                   <td class="end num">{r.pnl.cost === null ? '–' : formatUnits(r.pnl.cost, 4)}</td>
                   <td class="end num" class:hm-up={(r.pnl.pnl ?? 0) > 0} class:hm-down={(r.pnl.pnl ?? 0) < 0}>{r.pnl.pnl === null ? '–' : `${r.pnl.pnl >= 0 ? '+' : ''}${formatUnits(r.pnl.pnl, 4)}`}{#if r.pnl.cost !== null && !r.pnl.complete}<span class="faint" title="Some of the shares were traded outside this app"> *</span>{/if}</td>
                   <td><span class="hm-stage" class:live={r.m?.status === 'trading'} class:vote={r.m?.status === 'closed'}>{r.m?.status === 'trading' ? 'Trading' : 'Being voted on'}</span></td>
+                  <td class="end">{#if r.m?.status === 'trading'}<button type="button" class="btn small ghost" onclick={(e) => { e.stopPropagation(); openTrade(r.market, r.state, 'sell'); }}>Sell…</button>{/if}</td>
                 </tr>
               {/each}
             </tbody>
@@ -83,13 +91,13 @@
         <p class="hm-empty">No trade yet.</p>
       {:else}
         <div class="hm-wrap">
-          <table class="hm-table" aria-label="Trades">
+          <table class="hm-table" use:stacked aria-label="Trades">
             <thead><tr><th>Time</th><th>Market</th><th>Order</th><th class="end">Shares</th><th class="end">Coins</th><th class="end">Average</th><th>Transaction</th></tr></thead>
             <tbody>
               {#each trades as x (x.txid)}
                 {@const m = hm.markets.find((y) => y.id === x.market)}
                 {@const o = m ? outcomesOf(m, decisions).find((y) => y.state === x.state) : undefined}
-                <tr class="click" onclick={() => go('markets', `m-${x.market}`)}>
+                <tr class="click" onclick={() => go('markets', `m-${x.market}`)} use:selectable={() => go('markets', `m-${x.market}`)}>
                   <td>{formatTime(x.time, true)}</td>
                   <td class="cut"><SafeText text={titleWithoutCategory(marketText(x.market) || x.market)} /></td>
                   <td><span class="status {x.shares > 0 ? 'ok' : 'bad'}">{x.shares > 0 ? 'Buy' : 'Sell'}</span> {#if o}<OutcomeName outcome={o} />{/if}</td>

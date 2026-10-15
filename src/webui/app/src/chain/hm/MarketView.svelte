@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+  import { stacked } from '../../lib/actions';
   // One market: what it is about, the chance of each of its outcomes now and over time, the decisions
   // it waits for, the positions of the wallet with what they made, who holds its shares; and the panel
   // to trade in it.
@@ -14,7 +16,7 @@
   import TradePanel from './TradePanel.svelte';
   import { barWidth } from './actions';
   import { categoryOf, commonQuestion, formatChance, formatUnits, marketKind, outcomesOf, periodEnd, pnlOf, scalarEstimate, statePayout, titleWithoutCategory, volume, type Market } from './model';
-  import { decisionMap, hm, priceSeries, tradesOf } from './store.svelte';
+  import { decisionMap, hm, priceSeries, tradesOf, tradeIntent } from './store.svelte';
 
   let { id, back }: { id: string; back: () => void } = $props();
 
@@ -48,8 +50,12 @@
   const shown = $derived([...outcomes].sort((a, b) => Number(b.exclusive) - Number(a.exclusive) || (market?.states[b.state]?.price ?? 0) - (market?.states[a.state]?.price ?? 0)));
   let showAll = $state(false);
   const visible = $derived(showAll || kind !== 'categorical' ? shown : shown.filter((o) => o.exclusive));
-  let chosen = $state(-1);
-  let side = $state<'buy' | 'sell'>('buy');
+  // Opened for a trade (Portfolio: "Sell…"): that outcome and side.
+  // (The view is made again for another market: {#key} in Markets.svelte.)
+  const intent = untrack(() => (tradeIntent.market === id ? { state: tradeIntent.state, side: tradeIntent.side } : null));
+  if (intent) tradeIntent.market = '';
+  let chosen = $state(intent?.state ?? -1);
+  let side = $state<'buy' | 'sell'>(intent?.side ?? 'buy');
   $effect(() => {
     if (chosen < 0 && shown.length) chosen = shown[0].state;
   });
@@ -87,12 +93,12 @@
 
     <header class="head">
       <div class="title">
-        <h1><SafeText text={titleWithoutCategory(market.text)} /></h1>
+        <h1 title={titleWithoutCategory(market.text)}><SafeText text={titleWithoutCategory(market.text)} /></h1>
         {#if question}<p class="muted"><SafeText text={question} /></p>{/if}
         <p class="sub">
           <span class="hm-stage" class:live={market.status === 'trading'} class:vote={market.status === 'closed'} class:done={market.status === 'settled'}>{market.status === 'trading' ? 'Trading' : market.status === 'closed' ? 'Being voted on' : 'Paid out'}</span>
           {#if market.status === 'trading' && market.tradinguntil !== undefined && hm.info}
-            <span class="muted">Trading closes in <Countdown info={hm.info} target={periodEnd(hm.info, market.tradinguntil)} /> (end of period {market.tradinguntil})</span>
+            <span class="muted">Trading <Countdown info={hm.info} target={periodEnd(hm.info, market.tradinguntil)} phrase="closes" /> (end of period {market.tradinguntil})</span>
           {:else if market.status === 'closed'}
             <button type="button" class="btn ghost small" onclick={() => go('voting')}>To the voting center</button>
           {/if}
@@ -153,7 +159,7 @@
           <section class="panel">
             <div class="panel-head"><h2>Your positions</h2><button type="button" class="btn ghost small" onclick={() => go('portfolio')}>Portfolio</button></div>
             <div class="hm-wrap">
-              <table class="hm-table" aria-label="Your positions in this market">
+              <table class="hm-table" use:stacked aria-label="Your positions in this market">
                 <thead><tr><th>Outcome</th><th class="end">Shares</th><th class="end">Chance</th><th class="end">Worth now</th><th class="end">Paid</th><th class="end">Profit or loss</th><th></th></tr></thead>
                 <tbody>
                   {#each rows as r (r.account + r.state)}
@@ -192,7 +198,7 @@
           <section class="panel">
             <div class="panel-head"><h2>Who holds shares</h2><span class="muted small">{market.positions?.length ?? 0} position(s)</span></div>
             <div class="hm-wrap">
-              <table class="hm-table" aria-label="Who holds shares">
+              <table class="hm-table" use:stacked aria-label="Who holds shares">
                 <thead><tr><th>Account</th><th>Outcome</th><th class="end">Shares</th></tr></thead>
                 <tbody>
                   {#each holders as h (h.account + h.state)}
@@ -245,6 +251,12 @@
     font-size: 1.55rem;
     line-height: 1.25;
     overflow-wrap: anywhere;
+    /* A title of 400 characters takes no more than four lines; the whole of it in its tooltip (audit port-1 #9). */
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
   .sub {
     display: flex;

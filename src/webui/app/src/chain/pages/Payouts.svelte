@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { selectable, stacked } from '../../lib/actions';
   // Payouts and settlements: what the markets paid this wallet. A market pays when the last of its
   // decisions is resolved: every share gets what its outcome was worth, in the coinbase of the block
   // that settles it, to the account that holds it; the author of a market gets what its market maker has
@@ -18,7 +19,7 @@
   import Countdown from '../hm/Countdown.svelte';
   import OutcomeName from '../hm/OutcomeName.svelte';
   import { formatChance, formatUnits, outcomesOf, periodEnd, statePayout, titleWithoutCategory } from '../hm/model';
-  import { decisionMap, hm, startHivemind } from '../hm/store.svelte';
+  import { decisionMap, hm, startHivemind, ownItems } from '../hm/store.svelte';
 
   $effect(() => startHivemind());
   $effect(() => {
@@ -48,7 +49,7 @@
   /** Markets settled that this wallet traded in (by the trades of this app) or opened. */
   const settled = $derived.by(() => {
     const traded = new Set(hm.journal.trades.filter((x) => x.wallet === wallets.current).map((x) => x.market));
-    const opened = new Set(wallets.current !== null ? (hm.journal.mine[wallets.current] ?? []) : []);
+    const opened = ownItems(wallets.current);
     return hm.markets
       .filter((m) => m.status === 'settled')
       .map((m) => {
@@ -88,12 +89,12 @@
       <section class="panel">
         <div class="panel-head"><h2>Waiting for the vote</h2></div>
         <div class="hm-wrap">
-          <table class="hm-table" aria-label="Waiting for the vote">
+          <table class="hm-table" use:stacked aria-label="Waiting for the vote">
             <thead><tr><th>Market</th><th>Outcome</th><th class="end">Shares</th><th class="end">Chance</th><th class="end">Expected</th><th>Vote ends</th></tr></thead>
             <tbody>
               {#each pending as x (x.p.market + x.p.account + x.p.state)}
                 {@const o = outcomesOf(x.m!, decisions).find((y) => y.state === x.p.state)}
-                <tr class="click" onclick={() => go('markets', `m-${x.p.market}`)}>
+                <tr class="click" onclick={() => go('markets', `m-${x.p.market}`)} use:selectable={() => go('markets', `m-${x.p.market}`)}>
                   <td class="cut"><SafeText text={titleWithoutCategory(x.m!.text)} /></td>
                   <td>{#if o}<OutcomeName outcome={o} />{/if}</td>
                   <td class="end num">{formatUnits(x.p.shares)}</td>
@@ -114,7 +115,7 @@
         <p class="hm-empty">{current.recordsLoaded ? 'No payout yet. A market pays when its decisions are resolved.' : 'Loading the history…'}</p>
       {:else}
         <div class="hm-wrap">
-          <table class="hm-table" aria-label="Payouts received">
+          <table class="hm-table" use:stacked aria-label="Payouts received">
             <thead><tr><th>Time</th><th>As</th><th class="end">Block</th><th class="end">Amount</th><th>Account</th><th>Transaction</th></tr></thead>
             <tbody>
               {#each received as x (x.r.key)}

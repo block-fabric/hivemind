@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { stacked } from '../../lib/actions';
   // Votecoin: the reputation that votes on the decisions. What this wallet holds, account by account, and
   // its share of all; how it went over time (as this app saw it: resolutions move reputation from those
   // who vote against the outcome to those who vote with it); moving some to another account; and who
@@ -137,7 +138,7 @@
           {/if}
           {#if changes.length}
             <div class="hm-wrap">
-              <table class="hm-table" aria-label="Changes">
+              <table class="hm-table" use:stacked aria-label="Changes">
                 <thead><tr><th>Time</th><th class="end">Block</th><th class="end">Change</th><th class="end">Holding</th></tr></thead>
                 <tbody>
                   {#each changes.slice(0, 12) as c (c.h + ':' + c.t)}
@@ -182,7 +183,7 @@
         <p class="hm-empty">None holds votecoin.</p>
       {:else}
         <div class="hm-wrap">
-          <table class="hm-table" aria-label="Accounts of this wallet">
+          <table class="hm-table" use:stacked aria-label="Accounts of this wallet">
             <thead><tr><th>Account</th><th class="end">Votecoin</th><th>Share of all</th></tr></thead>
             <tbody>
               {#each mine as a (a.account)}
@@ -201,7 +202,7 @@
     <section class="panel">
       <div class="panel-head"><h2>Largest holders</h2><span class="muted small">{hm.holders.length} shown</span></div>
       <div class="hm-wrap">
-        <table class="hm-table" aria-label="Largest holders">
+        <table class="hm-table" use:stacked aria-label="Largest holders">
           <thead><tr><th>Account</th><th class="end">Votecoin</th><th>Share of all</th></tr></thead>
           <tbody>
             {#each hm.holders.slice(0, 50) as h (h.account)}

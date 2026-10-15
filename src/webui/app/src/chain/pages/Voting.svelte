@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { stacked } from '../../lib/actions';
   // The voting center: what the reputation of this wallet votes on. The decisions to vote on now, with
   // the time left to seal a vote; the votes to reveal, with the time left to reveal them (a vote not
   // revealed does not count); the decisions that come up next; those waiting to be resolved; and the
@@ -230,7 +231,7 @@
       {#if info}
         <p class="muted sub">
           Period {info.period} ·
-          {#if info.phase === 'reveal'}<span class="hm-stage vote">Reveal phase</span> ends in <Countdown {info} target={periodEnd(info, info.period)} urgent={info.periodblocks ? 1 : 900} />{:else}<span class="hm-stage live">Seal phase</span> · reveals start in <Countdown {info} target={revealStart(info, info.period)} />{/if}
+          {#if info.phase === 'reveal'}<span class="hm-stage vote">Reveal phase</span> <Countdown {info} target={periodEnd(info, info.period)} urgent={info.periodblocks ? 1 : 900} phrase="ends" />{:else}<span class="hm-stage live">Seal phase</span> · reveals <Countdown {info} target={revealStart(info, info.period)} phrase="start" />{/if}
         </p>
       {/if}
     </div>
@@ -281,7 +282,7 @@
                     {/if}
                   </span>
                 {/if}
-                <span class="muted">ends in <Countdown info={info!} target={periodEnd(info!, d.closeperiod)} urgent={info?.periodblocks ? 1 : 900} /></span>
+                <span class="muted"><Countdown info={info!} target={periodEnd(info!, d.closeperiod)} urgent={info?.periodblocks ? 1 : 900} phrase="ends" /></span>
                 <button type="button" class="btn small primary" id="reveal-{d.id.slice(0, 8)}" disabled={busy !== null} onclick={() => reveal(d)}>Reveal vote</button>
               </div>
             </li>
@@ -337,7 +338,7 @@
         {:else}
           <ul class="list">
             {#each upcoming as d (d.id)}
-              <li><div class="q"><SafeText text={d.text} /></div><span class="muted small">voting starts in <Countdown info={info!} target={periodEnd(info!, d.eventperiod)} /> (period {d.eventperiod + 1})</span></li>
+              <li><div class="q"><SafeText text={d.text} /></div><span class="muted small">voting <Countdown info={info!} target={periodEnd(info!, d.eventperiod)} phrase="starts" /> (period {d.eventperiod + 1})</span></li>
             {/each}
           </ul>
         {/if}
@@ -360,7 +361,7 @@
         <p class="hm-empty">No vote yet.</p>
       {:else}
         <div class="hm-wrap">
-          <table class="hm-table" aria-label="Your votes">
+          <table class="hm-table" use:stacked aria-label="Your votes">
             <thead><tr><th>Revealed</th><th>Decision</th><th>Your answer</th><th>Outcome</th><th></th></tr></thead>
             <tbody>
               {#each past as v (v.decision + v.account)}

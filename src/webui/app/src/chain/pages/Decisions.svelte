@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { selectable, stacked } from '../../lib/actions';
   // The decisions: the questions the markets are about and the holders of reputation vote on. Every
   // decision, to search and filter (open, being voted on, resolved, listed by this wallet), a page at a
   // time; one opened shows its periods, its votes and the markets on it. And the calendar: the period
@@ -13,7 +14,7 @@
   import { barWidth } from '../hm/actions';
   import Countdown from '../hm/Countdown.svelte';
   import { clockOf, periodEnd, revealStart, titleWithoutCategory, type Decision, type DecisionStatus } from '../hm/model';
-  import { hm, startHivemind } from '../hm/store.svelte';
+  import { hm, startHivemind, ownItems } from '../hm/store.svelte';
   import { node, wallets } from '../../lib/state.svelte';
 
   $effect(() => startHivemind());
@@ -31,7 +32,7 @@
   let pageNo = $state(0);
   let openId = $state<string | null>(null);
 
-  const mine = $derived(new Set(wallets.current !== null ? (hm.journal.mine[wallets.current] ?? []) : []));
+  const mine = $derived(ownItems(wallets.current));
   const shown = $derived.by(() => {
     const q = search.trim().toLowerCase();
     return hm.decisions
@@ -99,11 +100,11 @@
         <p class="hm-empty">{hm.decisions.length === 0 ? 'No decision yet. List one: a question whose answer will be beyond dispute once known.' : 'No decision matches.'}</p>
       {:else}
         <div class="hm-wrap">
-          <table class="hm-table" aria-label="Decisions">
+          <table class="hm-table" use:stacked aria-label="Decisions">
             <thead><tr><th>Question</th><th>Status</th><th>Answer</th><th class="end">Known in period</th><th class="end">Vote ends in period</th><th class="end">Markets</th></tr></thead>
             <tbody>
               {#each slice as d (d.id)}
-                <tr class="click" onclick={() => (openId = openId === d.id ? null : d.id)} aria-expanded={openId === d.id}>
+                <tr class="click" onclick={() => (openId = openId === d.id ? null : d.id)} use:selectable={() => (openId = openId === d.id ? null : d.id)} aria-expanded={openId === d.id}>
                   <td class="cut q"><SafeText text={d.text} />{#if mine.has(d.id)} <span class="badge accent">yours</span>{/if}</td>
                   <td><span class="hm-stage" class:live={d.status === 'open'} class:vote={d.status === 'voting'} class:done={d.status === 'resolved'}>{d.status === 'open' ? 'Open' : d.status === 'voting' ? 'Voting' : 'Resolved'}</span></td>
                   <td>{#if d.status === 'resolved'}<strong><SafeText text={String(d.answer ?? '')} /></strong>{:else}<span class="muted">{d.scaled ? `${d.min} to ${d.max}` : 'yes or no'}</span>{/if}</td>
@@ -161,9 +162,9 @@
         </div>
         <p class="state">
           {#if hm.info.phase === 'reveal'}
-            <span class="hm-stage vote">Reveal phase</span> The votes that end in this period are revealed now. The period ends in <Countdown info={hm.info} target={periodEnd(hm.info, hm.info.period)} urgent={hm.info.periodblocks ? 1 : 600} />.
+            <span class="hm-stage vote">Reveal phase</span> The votes that end in this period are revealed now. The period <Countdown info={hm.info} target={periodEnd(hm.info, hm.info.period)} urgent={hm.info.periodblocks ? 1 : 600} phrase="ends" />.
           {:else}
-            <span class="hm-stage live">Seal phase</span> Votes are sealed: nobody sees them. The reveal phase starts in <Countdown info={hm.info} target={revealStart(hm.info, hm.info.period)} />.
+            <span class="hm-stage live">Seal phase</span> Votes are sealed: nobody sees them. The reveal phase <Countdown info={hm.info} target={revealStart(hm.info, hm.info.period)} phrase="starts" />.
           {/if}
         </p>
         <p class="hm-help">A period is for trading until it ends. In the periods after, the decisions whose answer became known in it are voted on: votes are sealed, then revealed in the last third of the last period of the vote; the first block after it resolves them and pays the markets.</p>
@@ -172,7 +173,7 @@
     <section class="panel">
       <div class="panel-head"><h2>Periods ahead</h2></div>
       <div class="hm-wrap">
-        <table class="hm-table" aria-label="Periods ahead">
+        <table class="hm-table" use:stacked aria-label="Periods ahead">
           <thead><tr><th>Period</th><th>Ends</th><th>Answers known</th><th>Votes end</th></tr></thead>
           <tbody>
             {#each calendar as c (c.period)}

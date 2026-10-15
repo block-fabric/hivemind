@@ -12,10 +12,10 @@
   import { ask, errorText, inform, walletRpc } from '../../lib/dialogs.svelte';
   import { formatTime, shortHash } from '../../lib/format';
   import { go, nav, PAGES } from '../../lib/nav.svelte';
-  import { toast, wallets, walletsEnabled } from '../../lib/state.svelte';
+  import { app, node, toast, wallets, walletsEnabled } from '../../lib/state.svelte';
   import '../hm/hm.css';
   import Countdown from '../hm/Countdown.svelte';
-  import { decisionProblems, DEFAULT_FEE_BPS, formatChance, formatUnits, LIMITS, lmsrFunding, marketProblems, periodEnd, revealStart, type DecisionDraft, type MarketKind } from '../hm/model';
+  import { decisionProblems, DEFAULT_FEE_BPS, formatChance, formatUnits, LIMITS, lmsrFunding, marketProblems, periodAt, periodEnd, revealStart, type DecisionDraft, type MarketKind } from '../hm/model';
   import { creation, startCreation } from '../hm/creation.svelte';
   import { hm, startHivemind } from '../hm/store.svelte';
 
@@ -34,6 +34,31 @@
   let max = $state(100);
   let eventIn = $state(1);
   let votePeriods = $state(1);
+  /**
+   * When the answer is known: a number of periods from now, an amount of time from now, or a date, as chains-qt
+   * took them (audit port-1 #8). The time and the date give the period they fall in.
+   */
+  let when = $state<'periods' | 'time' | 'date'>('periods');
+  let timeAmount = $state(7);
+  let timeUnit = $state<'hours' | 'days' | 'weeks'>('days');
+  let dateText = $state('');
+  const UNIT_SECONDS = { hours: 3600, days: 86400, weeks: 604800 } as const;
+  /** The moment the answer is known, in seconds, by the time or the date given; null when none is given. */
+  const whenSeconds = $derived.by(() => {
+    const now = Math.floor(Date.now() / 1000);
+    if (when === 'time') return Number.isFinite(timeAmount) && timeAmount > 0 ? now + Math.round(timeAmount * UNIT_SECONDS[timeUnit]) : null;
+    if (when === 'date') {
+      const ms = dateText ? new Date(`${dateText}T23:59:59`).getTime() : NaN;
+      return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+    }
+    return null;
+  });
+  $effect(() => {
+    const at = whenSeconds;
+    if (at === null || !hm.info) return;
+    const now = Math.floor(Date.now() / 1000);
+    eventIn = periodAt(hm.info, at, now, node.tip?.height ?? 0, app.info?.blockSpacing ?? 60) - hm.info.period;
+  });
   let withMarket = $state(true);
   let title = $state('');
   let titleTouched = $state(false);
@@ -269,17 +294,32 @@
             <p class="hm-help">The decisions chosen have their periods already: the market trades until the first of them is up for the vote.</p>
           {:else if info}
             <div class="pair">
-              <label class="field">
-                <span>The answer is known in</span>
-                <span class="inline"><input id="create-event" type="number" min="0" max={info.maxperiodsahead} step="1" bind:value={eventIn} /> <span class="muted">periods: period {eventPeriod}</span></span>
-              </label>
+              <div class="field">
+                <span id="create-when-label">The answer is known</span>
+                <div class="hm-chips" role="radiogroup" aria-labelledby="create-when-label">
+                  <button type="button" class="hm-chip" role="radio" aria-checked={when === 'periods'} onclick={() => (when = 'periods')}>In a number of periods</button>
+                  <button type="button" class="hm-chip" role="radio" aria-checked={when === 'time'} onclick={() => (when = 'time')}>After some time</button>
+                  <button type="button" class="hm-chip" role="radio" aria-checked={when === 'date'} onclick={() => (when = 'date')}>On a date</button>
+                </div>
+                {#if when === 'periods'}
+                  <span class="inline"><input id="create-event" type="number" min="0" max={info.maxperiodsahead} step="1" aria-label="Periods from now" bind:value={eventIn} /> <span class="muted">periods: period {eventPeriod}</span></span>
+                {:else if when === 'time'}
+                  <span class="inline">
+                    <input id="create-event-time" type="number" min="1" step="1" aria-label="Time from now" bind:value={timeAmount} />
+                    <select class="pill" aria-label="Unit of time" bind:value={timeUnit}><option value="hours">hours</option><option value="days">days</option><option value="weeks">weeks</option></select>
+                    <span class="muted">from now: period {eventPeriod}</span>
+                  </span>
+                {:else}
+                  <span class="inline"><input id="create-event-date" type="date" aria-label="Date" bind:value={dateText} /> <span class="muted">{dateText ? `period ${eventPeriod}` : 'choose a day'}</span></span>
+                {/if}
+              </div>
               <label class="field">
                 <span>It is voted on for</span>
                 <span class="inline"><input id="create-votes" type="number" min="1" max={info.maxvoteperiods} step="1" bind:value={votePeriods} /> <span class="muted">period(s)</span></span>
               </label>
             </div>
             <ol class="timeline" aria-label="Timeline">
-              <li><span class="hm-stage live">Trading</span> until period {eventPeriod} ends{#if info.periodseconds}, {formatTime(periodEnd(info, eventPeriod))}{/if} (in <Countdown {info} target={periodEnd(info, eventPeriod)} />)</li>
+              <li><span class="hm-stage live">Trading</span> until period {eventPeriod} ends{#if info.periodseconds}, {formatTime(periodEnd(info, eventPeriod))}{/if} (<Countdown {info} target={periodEnd(info, eventPeriod)} phrase="in" />)</li>
               <li><span class="hm-stage vote">Votes sealed</span> from period {eventPeriod + 1} until the reveal phase of period {closePeriod}{#if info.periodseconds}, {formatTime(revealStart(info, closePeriod))}{/if}</li>
               <li><span class="hm-stage vote">Votes revealed</span> in the last third of period {closePeriod}</li>
               <li><span class="hm-stage done">Resolved</span> by the first block after period {closePeriod}{#if withMarket}; the market pays out{/if}</li>
@@ -328,7 +368,7 @@
                     <li><span class="hm-dot hm-c0"></span>{kind === 'scalar' ? 'Low' : 'No'}<span class="num">50.0%</span></li>
                   {/if}
                 </ul>
-                <span class="faint small">{states} states · depth {formatUnits(liquidity, 2)} · fee {feePct}%</span>
+                <span class="faint small">{states} states · liquidity {formatUnits(liquidity, 2)} · fee {feePct}%</span>
               </div>
             {/if}
             <dl class="facts">

@@ -105,9 +105,50 @@ export const hm = $state({
   error: '',
   loaded: false,
   journal: emptyJournal(),
+  /**
+   * The decisions and markets whose author is an address of the wallet loaded (getaddressinfo: ismine), as chains-qt
+   * told them: also those listed from the console, from another machine, or before the journal was lost.
+   */
+  authored: [] as string[],
   /** Counts the refreshes. */
   version: 0,
 });
+
+/** A trade to show when a market opens (Portfolio: "Sell…" opens the market on the Sell side of the outcome held). */
+export const tradeIntent = $state({ market: '', state: -1, side: 'buy' as 'buy' | 'sell' });
+
+/** Open a market on a side of an outcome. */
+export function openTrade(market: string, state: number, side: 'buy' | 'sell'): void {
+  tradeIntent.market = market;
+  tradeIntent.state = state;
+  tradeIntent.side = side;
+}
+
+/** Whether an address is the wallet's, by wallet and address (asked once each). */
+const ownAddress = new Map<string, boolean>();
+
+/** The ids of the decisions and markets whose author is an address of the wallet (audit port-1 #7). */
+async function authoredBy(wallet: string, items: readonly { id: string; author?: string }[]): Promise<string[]> {
+  const unknown = [...new Set(items.map((x) => x.author).filter((a): a is string => !!a && !ownAddress.has(`${wallet}|${a}`)))];
+  // A few at a time: a chain of many authors asks the wallet once for each, then never again.
+  for (let i = 0; i < unknown.length; i += 8) {
+    await Promise.all(
+      unknown.slice(i, i + 8).map((a) =>
+        rpc
+          .raw<{ ismine?: boolean }>('getaddressinfo', [a], { wallet })
+          .then((r) => ownAddress.set(`${wallet}|${a}`, !!r?.ismine))
+          .catch(() => undefined),
+      ),
+    );
+  }
+  return items.filter((x) => !!x.author && ownAddress.get(`${wallet}|${x.author}`) === true).map((x) => x.id);
+}
+
+/** What the wallet loaded listed or opened: by its author on the chain, and what this app recorded. */
+export function ownItems(wallet: string | null): Set<string> {
+  if (wallet === null) return new Set();
+  return new Set([...(hm.wallet === wallet ? hm.authored : []), ...(hm.journal.mine[wallet] ?? [])]);
+}
 
 /** The decisions by id. */
 export function decisionMap(): Map<string, Decision> {
@@ -408,6 +449,18 @@ async function refreshOnce(): Promise<void> {
       rpc.raw<Market[]>('listmarkets'),
       rpc.raw<Holding[]>('listreputation', [100]),
     ]);
+    if (!hm.loaded) {
+      // The first time: the markets and the decisions at once; what the wallet holds, the votes and the authors
+      // follow (the first visit of Markets waited for all of it: audit port-1 #10).
+      hm.info = info;
+      hm.decisions = decisions;
+      hm.markets = markets;
+      hm.holders = holders;
+      hm.height = height;
+      hm.error = '';
+      hm.loaded = true;
+      hm.version++;
+    }
     let positions: WalletPosition[] = [];
     let reputation: Holding[] = [];
     if (wallet !== null) {
@@ -427,6 +480,8 @@ async function refreshOnce(): Promise<void> {
           .catch(() => undefined),
       ),
     );
+    const authored = wallet !== null ? await authoredBy(wallet, [...decisions, ...markets]) : [];
+    hm.authored = authored;
     hm.info = info;
     hm.decisions = decisions;
     hm.markets = markets;
@@ -486,5 +541,6 @@ export function resetHivemind(): void {
   lastWallet = undefined;
   journalLoaded = false;
   journalWarned = false;
-  Object.assign(hm, { info: null, decisions: [], markets: [], positions: [], reputation: [], holders: [], details: {}, wallet: null, height: -1, error: '', loaded: false, journal: emptyJournal(), version: 0 });
+  ownAddress.clear();
+  Object.assign(hm, { info: null, decisions: [], markets: [], positions: [], reputation: [], holders: [], details: {}, wallet: null, height: -1, error: '', loaded: false, journal: emptyJournal(), authored: [], version: 0 });
 }
