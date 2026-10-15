@@ -139,8 +139,8 @@
     {#if !hm.loaded}
       <p class="hm-empty">Asking the node…</p>
     {:else if shown.length === 0}
-      <div class="panel hm-empty">
-        <p>{hm.markets.length === 0 ? 'No market yet. Open the first one: list a decision, then a market on it.' : 'No market matches.'}</p>
+      <div class="panel none">
+        <p class="hm-empty">{hm.markets.length === 0 ? 'No market yet. Open the first one: list a decision, then a market on it.' : 'No market matches.'}</p>
         {#if hm.markets.length === 0}<button type="button" class="btn primary" onclick={() => go('create')}><Icon name="plus" size={15} /> Create</button>{/if}
       </div>
     {:else}
@@ -232,6 +232,15 @@
     align-items: center;
     gap: 0.45rem;
     font-size: 0.88rem;
+  }
+  .none {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-bottom: 1rem;
+  }
+  .none .hm-empty {
+    align-self: stretch;
   }
   .count-line {
     margin: 0;
