@@ -146,7 +146,12 @@ App, on a thread of its own: intro, configuration, init, then shutdown
 wallet}`. RPC calls go to the in-process dispatcher, as the console of
 chains-qt does: no HTTP server, no credentials. They are limited to the
 methods of `rpcpolicy.cpp` (a frontend test checks that every method the pages
-name is there); the console (`console.run`) is the one way to run any command.
+name is there); the console (`console.run`) is the one way to run any command,
+and a command that does more than read waits for the user's word, given to the
+desktop (below). The policy holds in the end-to-end tests too: their script
+sets the node up with requests of the kind `testrpc` (taken only with
+`-webuitestscript` in a build with `WEBUI_TEST_HOOKS`), and each run fails on
+an RPC method the policy refused to a page (`test.refused`).
 Calls never run on the UI thread. Calls that may take long (a command of the
 console, a download, a rescan, a file chooser, loading a wallet,
 `scantxoutset`) run on a lane of their own and never hold up the quick ones. A
@@ -234,6 +239,27 @@ Rules the code keeps:
   up again wherever it is shown). Sidechain nodes get the RPC
   password of this node in an owner-only file (`-mainchainrpcpasswordfile`),
   never on their command line.
+* **The page does not act for the user where it matters.** The page draws the
+  app; it cannot, by itself, do what a compromised page would want
+  (guard.cpp, audit port-1 #3). These wait for a confirmation of the desktop,
+  in fixed words that say first what the host parsed:
+  - a command of the console that does more than read (anything but `get…`,
+    `list…`, `decode…`, `estimate…`, `verify…`, `help` and the commands that
+    only build or decode data; `listdescriptors` and `gethdkeys` always): the
+    name of the command first, once per command and line, checked as each
+    command runs, nested ones too;
+  - a web address that is not one of the app's own links (`app.open`): its
+    host first, http said to be unencrypted;
+  - in the app of a sidechain, what spends the wallet of the mainchain node
+    and where its credentials go (doc/sidechain.md).
+  A test that did not queue an answer (`test.confirmAnswer`) gets "no", never
+  a dialog on the desktop.
+* **Direction.** Text from outside is isolated as to direction: SafeText is
+  `dir="auto"`, every `translate="no"` is `unicode-bidi: isolate`, and a value
+  that can turn the text (a letter of a right-to-left script, a mark of
+  direction) put in `t()`/`tn()` goes between FSI and PDI, so that a title
+  starting with U+202E cannot turn the app's own sentence around, amounts
+  included (audit port-1 #2).
 * **Text is text.** No `{@html}`, no `innerHTML`: what comes from the chain,
   the node or the user shows as text (a test checks the sources). The content
   security policy allows nothing but the app's own files: no remote content,
@@ -316,12 +342,31 @@ The host side (src/webui/sidechainapi.cpp) reaches the mainchain node on the nod
 |---|---|
 | `peg.connection` | How the node reaches its mainchain node: connected or why not, host:port, the slot, the wallet, cookie or password (never the password) |
 | `peg.call {method, params}` | A method of the mainchain node, from a list that only reads (`getdrivechaininfo`, `listwithdrawalbundles`, `getsidechainevents`, `listsidechaindeposits`...) and of its wallet (`getbalances`, `getwalletinfo`, `getnewaddress`) |
-| `peg.deposit {destination, amount}` | The deposit helper: `createsidechaindeposit` of the mainchain wallet, only to a deposit address of this sidechain (its slot, its checksum, a valid address of this chain) |
+| `peg.deposit {destination, amount}` | The deposit helper: `createsidechaindeposit` of the mainchain wallet, only to a deposit address of this sidechain (its slot, its checksum, a valid address of this chain), on the user's word given to the desktop |
+| `bmm.set {mine, address?, always?, amount?}` | Merged mining on (`setbmm`: the address of the fees, an address of this chain; with `always`, the offer for every block of the mainchain, at most 0.01) on the user's word given to the desktop; off at once |
+| `bmm.request {address, amount}` | One block by hand (`requestbmmblock`), the offer at most 0.01, on the user's word given to the desktop |
+
+**What spends the wallet of the mainchain node waits for the desktop** (audit port-1 #4). A deposit,
+merged mining turned on and a block asked for by hand are host methods: the host checks what the
+page gives, caps the offers of merged mining (`SidechainApi::MAX_BMM_OFFER`), then asks with
+`Window::Confirm`, the amount it parsed first ("Amount: 5.00 coins of Chains", "Offer: 0.0001 coins
+of Chains for every block of Chains"). A decline answers `CANCELLED`, which the pages take quietly.
+The address of the mainchain node (`mainchainConnect` in Settings) is another machine only on the
+user's word too: the node sends that machine the credentials of the mainchain node, unencrypted.
+`setbmm`, `requestbmmblock` and `createsidechaindeposit` are not methods the page calls.
 
 The RPC policy of a sidechain (rpcpolicy.cpp) adds its methods (`getmainchaininfo`, `getbmminfo`,
-`setbmm`, `requestbmmblock`, `listwithdrawals`, `getwithdrawalbundle`, `getdepositaddress`, and
+`syncmainchain`, `listwithdrawals`, `getwithdrawalbundle`, `getdepositaddress`, and
 `createwithdrawal` and `refundwithdrawal`, which need the keys) and has none of the drivechain methods
-of the mainchain.
+of the mainchain. `test/rpcpolicy.test.ts` reads it as this chain builds it (the branch of `#if
+WEBUI_SIDECHAIN` of its role, with local.cpp), against the sources that run in this chain (not the
+pages chain.json drops, nor the home of the other role); the end-to-end runs keep to it as well.
+
+The help links of chain.json (`links`) are the app's own: they open without asking (they are built into
+the host, webui/chainconfig.h); any other web address waits for the desktop.
+
+In a narrow panel (a window of 480 px) the tables of Peg and Merged mining are lists of cards, every
+cell under the words of its column (`use:stacked`, a container query in styles/side.css).
 
 The rules of the kit hold in these pages: text from the chain (addresses, hashes, errors of the
 mainchain node) is shown with `SafeText` or `translate="no"`; the app's own words go through `t()`;
@@ -407,6 +452,7 @@ model), colours from the tokens of the themes.
 | `e2e/run_layouts.py` | The three layouts, the palette, the detail panel, the integrated title bar and the refresh (layouts.js, titlebar.js, refresh.js); pictures of each layout |
 | `e2e/run_windows.py` | From WSL, on the Windows of the machine (`--app build_win/bin/chains-app.exe --unit build_win/bin/test_chains-app.exe --shots <dir>`, in a folder `<stem>-app-test` of the Windows temporary folder, removed at the end): the unit tests, then smoke.js, layouts.js and titlebar.js; for a sidechain sidechain.js, the app on Windows following a regtest mainchain run in WSL, and the scripts of its own pages the same way (Hivemind: `--scripts sidechain,hivemind --app-arg=-hivemindperiodseconds=45 --js-var PERIOD=45`) |
 | `e2e/run_sidechain.py` | A sidechain (`webui_e2e_sidechain`, with `WEBUI_MAINCHAIN_BIN_DIR` or `MAINCHAIN_BIN_DIR` naming the folder of `chainsd`): a regtest mainchain started and mining a block every second, the sidechain activated in its slot, the app following it with a user name and a password file; through the page: a deposit address, the deposit made by the helper, merged mining on, the deposit credited, a withdrawal to an address of the mainchain wallet, its bundle voted on and paid (checked on the mainchain); pictures of the pages of the sidechain in the layouts and looks |
+| `e2e/run_release.py` | The release as a user gets it (`deploy-app`, built with `WEBUI_TEST_HOOKS=OFF`; `--windows` for the zip, run on the Windows of the machine): what the package holds and SHA256SUMS, no hooks of the tests in the app; the app run with no test script on regtest against a live mainchain, its node answering the command line program of the package, following the mainchain in its slot, and stopping cleanly |
 | `test_<stem>-app`: chainconfig_tests, sidechainapi_tests | chain.json against the chain parameters (names, unit, ports, prefixes); the methods of the mainchain the pages may call, the deposit helper refusing what is not a deposit address of this sidechain, the RPC policy of a sidechain |
 | `npm test`: chain/hivemind.test.ts | Hivemind: the market maker against the chain's formula, the names of the states, the clock of the periods in blocks and in time, the stages of a vote, the checks of the forms, the profit and loss, the journal; the pages driven against a pretend node: the markets filtered, a market with a purchase (preview, quote, slippage) and a sale, the wizard (a market on a new decision opened once it is mined; one of several options), the voting center (a vote sealed, a ballot, revealed whole in the reveal phase, a reminder), a transfer of votecoin, the portfolio, the payouts, the decisions and the calendar, the cards of the home, the pages in the menus before the tools |
 | `e2e/run_sidechain.py --script hivemind.js --app-arg=-hivemindperiodseconds=45 --js-var PERIOD=45` (ctest `webui_e2e_hivemind`) | Hivemind on regtest against a live mainchain: the reputation of the chain imported in the console, a deposit, merged mining; the wizard lists a decision and opens a market on it; Yes bought and partly sold in the trade panel; the vote sealed in the voting center then revealed in the reveal phase; the decision resolved, the market settled, the payout in Payouts; votecoin moved; pictures of every page in the layouts and looks |
