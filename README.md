@@ -13,11 +13,15 @@ checks every trade, every vote and every payout.
 | RPC port | 9854 (testnet 19854, signet 39854, regtest 29854) |
 
 Hivemind is the [sidechain template](doc/sidechain.md) of Chains with the markets added. A Hivemind node needs a
-Chains node (`chainsd` or `chains-qt`) to follow, reached over its RPC interface.
+Chains node (`chainsd` or `chains-app`) to follow, reached over its RPC interface.
+
+Its GUI is `hivemind-app`: the node and its wallet with an HTML interface in a native web view
+(WebKitGTK on Linux, WebView2 on Windows), with pages for the markets, trading, the voting center,
+votecoin and the payouts ([doc/webui.md](doc/webui.md)). There is no Qt GUI.
 
 ## Installing
 
-Builds for Linux (x86-64) are at https://blockfab.org/drivechains/. Unpack, check `sha256sum -c SHA256SUMS`, and run what is in `bin/`. The wallet needs the Qt libraries of the system (on Ubuntu 24.04: `sudo apt install libqt6widgets6 libqt6network6 libqt6dbus6 libqrencode4 libsqlite3-0`); the node and the tools need none of them.
+Builds for Linux (x86-64) are at https://blockfab.org/drivechains/. Unpack, check `sha256sum -c SHA256SUMS`, and run what is in `bin/`. The app needs WebKitGTK (on Ubuntu 24.04: `sudo apt install libwebkit2gtk-4.1-0 libsqlite3-0`); the node and the tools need none of it. On Windows, the installer or the zip of `hivemind-app` (the WebView2 Runtime of Windows 10 and 11).
 
 ## Building from source
 
@@ -25,21 +29,22 @@ On Debian or Ubuntu (24.04):
 
 ```sh
 sudo apt install build-essential cmake pkgconf python3 libevent-dev libboost-dev \
-    libsqlite3-dev libzmq3-dev qt6-base-dev qt6-tools-dev qt6-l10n-tools libqrencode-dev
-git clone https://github.com/block-fabric/hivemind.git
-cd hivemind
-cmake -B build -DBUILD_GUI=ON
+    libsqlite3-dev libzmq3-dev libgtk-3-dev libwebkit2gtk-4.1-dev nodejs npm
+git clone https://github.com/block-fabric/hivemind-app.git
+cd hivemind-app
+cmake -B build
 cmake --build build -j$(nproc)
 ```
 
-Leave out `-DBUILD_GUI=ON` (and the Qt packages) for a node without a window. Other systems and
-options: [doc/build-unix.md](doc/build-unix.md) and the other `doc/build-*.md`.
+`-DBUILD_WEBUI=OFF` (and no GTK, WebKitGTK or Node.js) for a node without a window. Windows: cross-built
+with the depends system (`make -C depends HOST=x86_64-w64-mingw32 NO_QT=1`), see [doc/webui.md](doc/webui.md).
+Other systems and options: [doc/build-unix.md](doc/build-unix.md) and the other `doc/build-*.md`.
 
 The programs, in `build/bin`:
 
 | Program | What it is |
 |---|---|
-| `hivemind-qt` | the wallet, with its window |
+| `hivemind-app` | the wallet, with its window |
 | `hivemindd` | the node, without a window |
 | `hivemind-cli` | commands for a running node or wallet |
 | `hivemind-wallet`, `hivemind-tx`, `hivemind-util` | tools that work without a node |
@@ -53,14 +58,14 @@ set to the folder of its programs.
 First a Chains node, with RPC on (`server=1` in `chains.conf`, or `-server`), on the same network.
 
 The simplest is to let the Chains wallet run Hivemind: in its **Sidechain Nodes** window, select
-Hivemind, press **Locate programs…** and choose the folder with `hivemindd` and `hivemind-qt`, then **Start node**
+Hivemind, press **Locate programs…** and choose the folder with `hivemindd` and `hivemind-app`, then **Start node**
 or **Open wallet**.
 
 By hand, on the same computer as the Chains node:
 
 ```sh
-hivemind-qt                 # the main network
-hivemind-qt -testnet        # the test network
+hivemind-app                # the main network
+hivemind-app -testnet       # the test network
 ```
 
 It finds the Chains node by itself: RPC on 127.0.0.1 at the port of the network, and the cookie

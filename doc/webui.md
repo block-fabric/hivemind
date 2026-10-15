@@ -12,8 +12,13 @@ integrated title bar: [webui-layouts.md](webui-layouts.md).
 This document says how to build and run it, and how it is made, so that the
 sidechains can take it over for their own apps.
 
-> **In this tree (the sidechain template).** The kit is the one of `chains-app`, made configurable: the
-> program is `<stem>-app` (here `sidechain-app`, and `test_sidechain-app`), and what the app shows of its
+> **In this tree (Hivemind).** `hivemind-app` is the app of the sidechain template with the pages of
+> Hivemind: the markets, trading, the voting center, votecoin, the payouts. They are described in
+> [The pages of Hivemind](#the-pages-of-hivemind); their inventory against the Qt GUI of Hivemind is
+> section HM of [webui-parity.md](webui-parity.md).
+>
+> **From the sidechain template.** The kit is the one of `chains-app`, made configurable: the
+> program is `<stem>-app` (here `hivemind-app`, and `test_hivemind-app`), and what the app shows of its
 > chain is in one file, `src/webui/app/src/chain/chain.json`. The app of a sidechain has pages of its own
 > (Peg, Merged mining, its home, the Mainchain tab of Settings) in place of those of the mainchain
 > (Sidechains, Sidechain nodes, Solo mine). How, and how a sidechain adds its own pages so that the
@@ -324,7 +329,7 @@ files only through the native chooser; amounts with `Amount`; tables in the colo
 
 ### Pages of a chain of its own
 
-A sidechain made from the template (BitNames, BitAssets, Thunder...) adds its pages in three files the
+A sidechain made from the template (BitNames, BitAssets, Thunder...) adds its pages in five files the
 template keeps empty, and nowhere else, so that a merge of the template never conflicts with them:
 
 1. **src/webui/app/src/chain/local.ts**: an entry per page in `LOCAL_PAGES` (`id`, `title`, `icon`,
@@ -337,6 +342,10 @@ template keeps empty, and nowhere else, so that a merge of the template never co
 3. **src/webui/local.cpp**: the RPC methods the pages call (`RpcMethods`, added to the page's
    allowlist; those that need the keys in `KeyedRpcMethods`) and the host methods they need
    (`RegisterHost`, after the kit's).
+4. **src/webui/app/src/chain/icons.ts**: icons of its own (`LOCAL_ICONS`, SVG paths on the 24 grid of
+   the kit's), named in `local.ts` like the kit's.
+5. **src/webui/app/src/chain/LocalCards.svelte**: cards of its own on the home of the dashboard, after
+   the row of summary cards (views/home/Card.svelte).
 
 ```ts
 // chain/local.ts
@@ -349,6 +358,39 @@ Its own words follow the rules of the kit (`t()` for the app's words; `SafeText`
 the chain); its tests go in `src/chain/` too (`*.test.ts` are found anywhere under src). Nothing in
 `lib/`, `components/`, `pages/` or `views/` needs to change; when a page needs something the kit does
 not offer, make it a change of the template (generic, behind `chain.json`), and merge it.
+
+### The pages of Hivemind
+
+In `src/webui/app/src/chain`: `local.ts` lists them (all in the Chain section, after Peg and Merged
+mining, before the explorer and the tools), `LocalPages.svelte` shows them, `LocalCards.svelte` puts
+their cards on the home of the dashboard, `icons.ts` draws their icons; `pages/` holds the pages,
+`hm/` what they share. `src/webui/local.cpp` adds the RPC methods of the markets to the page's
+allowlist (those that sign: createdecision, createmarket, buyshares, sellshares, transfervotecoin,
+sealvote, revealvote, sealballot, revealballot, as keyed methods).
+
+| Page | What it does |
+|---|---|
+| Markets | The markets as cards: search (title, decisions, id), status (trading, being voted on, paid out), kind (yes or no, a scale, several outcomes), category (a word in brackets at the start of a title, as the wizard writes it), the wallet's; sorted by age, shares sold, depth, closing time, uncertainty. A market (`hm/MarketView.svelte`): the chance of each outcome over time, its decisions, the positions of the wallet with their profit or loss, who holds shares, and the trade panel (`hm/TradePanel.svelte`) |
+| Trade panel | Buy or sell an outcome, in coins to spend or shares; the cost worked out as the chain's market maker works it out (LMSR, `hm/model.ts`) and quoted by the node (`quotetrade`); the average price, the price impact, the fee, the chance after, what it pays if right; the slippage chosen sets the `maxcost` of a purchase or the `minproceeds` of a sale |
+| Portfolio | The positions of the wallet: worth now, what they pay if right, what they cost and made; the trades placed in the app |
+| Voting center | The decisions to vote on: an answer each, sealed alone (`sealvote`) or several closing together in one ballot (`sealballot`); the votes to reveal in the reveal phase, with the answer the app kept (`revealvote`, `revealballot`); deadlines counting down; the decisions coming up and waiting to be resolved; the votes of the wallet and how they fared; reminders |
+| Decisions | Every decision, filtered, a page at a time, with its votes and markets; the calendar of the periods (the phase now, the twelve periods ahead) |
+| Create | A wizard: a market on a yes or no question, a number on a scale, or one of 2 to 4 options (a decision each), or on decisions listed already, or a decision alone; the question, the timing with its timeline, the title, category, liquidity and fee; a preview with what it costs, checked as the chain checks it. A market on new decisions is opened once they are in a block (`hm/creation.svelte.ts`) |
+| Votecoin | The votecoin (reputation) of the wallet by account and its share, its history, a transfer checked against the least holding, the largest holders |
+| Payouts | What the markets paid the wallet: outputs of a coinbase to its accounts of the markets (labelled "market shares", "market author", "decision author" by the wallet) and to its voters; the markets settled and what a share of each outcome paid; the positions waiting for the vote |
+| Home | Cards: My positions, Closing soon, Votes due, Votecoin |
+
+**The journal.** The chain keeps no history of trades or prices, and the wallet does not keep the
+answer of a sealed vote (it needs it again to reveal it). The app keeps them in its preferences (key
+`hivemind`, per network, bounded: `hm/store.svelte.ts`): the answers sealed (as chains-qt kept them in
+QSettings), the votes revealed, the trades it placed, the prices it saw (the charts), the votecoin of
+each wallet over time, the decisions and markets each wallet made, the reminders given. What it did not
+see is not made up: a profit or loss needs the trades placed in the app, a chart starts at even odds
+when the market opened.
+
+The rules of the kit hold: text of the chain (questions, titles, options, accounts) with `SafeText` or
+`translate="no"`, the app's words through `t()`, no inline style (bars set through the CSS object
+model), colours from the tokens of the themes.
 
 ## Tests
 
@@ -366,6 +408,8 @@ not offer, make it a change of the template (generic, behind `chain.json`), and 
 | `e2e/run_windows.py` | From WSL, on the Windows of the machine (`--app build_win/bin/chains-app.exe --unit build_win/bin/test_chains-app.exe --shots <dir>`, in a folder `<stem>-app-test` of the Windows temporary folder, removed at the end): the unit tests, then smoke.js, layouts.js and titlebar.js; for a sidechain sidechain.js, the app on Windows following a regtest mainchain run in WSL |
 | `e2e/run_sidechain.py` | A sidechain (`webui_e2e_sidechain`, with `WEBUI_MAINCHAIN_BIN_DIR` or `MAINCHAIN_BIN_DIR` naming the folder of `chainsd`): a regtest mainchain started and mining a block every second, the sidechain activated in its slot, the app following it with a user name and a password file; through the page: a deposit address, the deposit made by the helper, merged mining on, the deposit credited, a withdrawal to an address of the mainchain wallet, its bundle voted on and paid (checked on the mainchain); pictures of the pages of the sidechain in the layouts and looks |
 | `test_<stem>-app`: chainconfig_tests, sidechainapi_tests | chain.json against the chain parameters (names, unit, ports, prefixes); the methods of the mainchain the pages may call, the deposit helper refusing what is not a deposit address of this sidechain, the RPC policy of a sidechain |
+| `npm test`: chain/hivemind.test.ts | Hivemind: the market maker against the chain's formula, the names of the states, the clock of the periods in blocks and in time, the stages of a vote, the checks of the forms, the profit and loss, the journal; the pages driven against a pretend node: the markets filtered, a market with a purchase (preview, quote, slippage) and a sale, the wizard (a market on a new decision opened once it is mined; one of several options), the voting center (a vote sealed, a ballot, revealed whole in the reveal phase, a reminder), a transfer of votecoin, the portfolio, the payouts, the decisions and the calendar, the cards of the home, the pages in the menus before the tools |
+| `e2e/run_sidechain.py --script hivemind.js --app-arg=-hivemindperiodseconds=45 --js-var PERIOD=45` (ctest `webui_e2e_hivemind`) | Hivemind on regtest against a live mainchain: the reputation of the chain imported in the console, a deposit, merged mining; the wizard lists a decision and opens a market on it; Yes bought and partly sold in the trade panel; the vote sealed in the voting center then revealed in the reveal phase; the decision resolved, the market settled, the payout in Payouts; votecoin moved; pictures of every page in the layouts and looks |
 | `npm test`: test/sidechain.test.ts | The chain of chain.json (units, URIs, addresses of both chains), the pages dropped, Peg and Merged mining in the Chain section and the menus, the events of the mainchain kept up to date across a reorganisation, the bundles, deposits and commitments, the log of merged mining, and the pages driven: the deposit helper, a withdrawal and its refund, the votes of the bundle, merged mining on and off and one block by hand, the cards of the home, the Mainchain settings |
 
 Each e2e script takes `--app build/bin/chains-app --tmp <dir> --shots <dir>`;

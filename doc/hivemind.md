@@ -313,10 +313,12 @@ Wallet: `createdecision`, `createmarket`, `buyshares`, `sellshares`,
 `transfervotecoin`, `sealvote`, `revealvote`, `sealballot`, `revealballot`,
 `getwalletreputation`, `getwalletpositions`.
 
-In `hivemind-qt`: Markets, in the navigation bar. It reads the node off the GUI
-thread, one refresh at a time (blocks that come meanwhile make one more, not
-one each): the wallet's shares come from `getwalletpositions` in one call, not
-from `getmarket` for every market.
+In `hivemind-app`: the pages Markets, Portfolio, Voting center, Decisions,
+Create, Votecoin and Payouts, in the Chain section, and four cards on the home
+of the dashboard ([webui.md](webui.md), "The pages of Hivemind"). They read the
+node one refresh at a time, again with each block (blocks that come meanwhile
+make one more, not one each): the wallet's shares come from
+`getwalletpositions` in one call, not from `getmarket` for every market.
 
 ## Code
 
@@ -327,7 +329,7 @@ from `getmarket` for every market.
 | Hook into the sidechain rules | `sidechain::State` (`ApplyMainEvents`, `ApplyTx`) |
 | Mempool checks (`CheckTx`, payouts policy) | `MemPoolAccept::DrivechainChecks`, `PreChecks` (`src/validation.cpp`) |
 | Commands | `src/rpc/hivemind.cpp`, `src/wallet/rpc/hivemind.cpp` |
-| GUI | `src/qt/marketsdialog.{h,cpp}` |
+| GUI | `src/webui/app/src/chain` (pages, hm), `src/webui/local.cpp` |
 | Tests | `src/test/hivemind_tests.cpp`, `test/functional/feature_hivemind*.py` |
 
 ## What the references do differently
