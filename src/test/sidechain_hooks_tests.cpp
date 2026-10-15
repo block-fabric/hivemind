@@ -820,10 +820,10 @@ BOOST_FIXTURE_TEST_CASE(future_block_time, SidechainSetup)
     BOOST_CHECK(!m_node.chainman->ProcessNewBlockHeaders({{block}}, /*min_pow_checked=*/true, state));
     BOOST_CHECK_EQUAL(state.GetRejectReason(), "time-too-new");
     BOOST_CHECK(state.GetResult() == BlockValidationResult::BLOCK_TIME_FUTURE);
-    const CBlock near{Build(GetTime() + 30)};
-    Commit(near.GetHash());
+    const CBlock soon{Build(GetTime() + 30)};
+    Commit(soon.GetHash());
     BlockValidationState near_state;
-    BOOST_CHECK_MESSAGE(m_node.chainman->ProcessNewBlockHeaders({{near}}, /*min_pow_checked=*/true, near_state), near_state.ToString());
+    BOOST_CHECK_MESSAGE(m_node.chainman->ProcessNewBlockHeaders({{soon}}, /*min_pow_checked=*/true, near_state), near_state.ToString());
 }
 
 BOOST_FIXTURE_TEST_CASE(chain_work_recomputed, SidechainSetup)
