@@ -62,7 +62,9 @@
     if (amount > held + 1e-12) return t('The account holds %1.', formatUnits(held));
     const left = held - amount;
     if (left > 1e-12 && left < info.minreputation) return t('A transfer leaves the account with none or with at least %1: move all of it, or less.', formatUnits(info.minreputation));
-    if (toValid && toHolds + amount < info.minreputation) return t('An account holds none or at least %1: move more.', formatUnits(info.minreputation));
+    // The holders listed are the largest 100: an account not among them is known to hold too little only when they are all.
+    const complete = hm.holders.length < 100 || hm.holders.some((h) => h.account === to.trim());
+    if (toValid && complete && toHolds + amount < info.minreputation) return t('An account holds none or at least %1: move more.', formatUnits(info.minreputation));
     if (to.trim() === from) return t('Move it to another account.');
     return '';
   });

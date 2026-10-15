@@ -282,7 +282,10 @@ export function walletAccounts(): string[] {
   return hm.reputation.map((r) => r.account);
 }
 
-/** Reminders: a vote this wallet can cast, a sealed vote to reveal. Once each. */
+/**
+ * Reminders: a vote this wallet can cast, a sealed vote to reveal. Once each. The notification names no
+ * text of the chain: a desktop may read markup in the body of a notification.
+ */
 export function remind(now: number): void {
   if (!hm.journal.reminders || !hm.info || hm.wallet === null || hm.reputation.length === 0) return;
   const info = hm.info;
@@ -296,8 +299,8 @@ export function remind(now: number): void {
   for (const d of hm.decisions) {
     const stage = voteStage(d, info);
     const sealed = Object.values(hm.journal.sealed).filter((s) => s.wallet === hm.wallet && s.decision === d.id);
-    if (stage === 'reveal' && sealed.length) give(`reveal|${hm.wallet}|${d.id}|${d.closeperiod}`, t('Time to reveal your vote'), t('Reveal your vote on “%1” before period %2 ends, or it does not count.', d.text, String(d.closeperiod)));
-    else if (stage === 'seal' && !sealed.length) give(`seal|${hm.wallet}|${d.id}|${d.closeperiod}`, t('A decision to vote on'), t('“%1” is up for the vote: seal your answer before the reveal phase of period %2.', d.text, String(d.closeperiod)));
+    if (stage === 'reveal' && sealed.length) give(`reveal|${hm.wallet}|${d.id}|${d.closeperiod}`, t('Time to reveal your vote'), t('Reveal your sealed votes in the voting center before period %1 ends, or they do not count.', String(d.closeperiod)));
+    else if (stage === 'seal' && !sealed.length) give(`seal|${hm.wallet}|${d.id}|${d.closeperiod}`, t('A decision to vote on'), t('A decision is up for the vote: seal your answer in the voting center before the reveal phase of period %1.', String(d.closeperiod)));
   }
   void now;
   saveJournal();
