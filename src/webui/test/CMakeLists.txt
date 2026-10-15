@@ -65,6 +65,21 @@ if(WEBUI_SIDECHAIN)
         --shots ${CMAKE_CURRENT_BINARY_DIR}/e2e-shots
     )
     set_tests_properties(webui_e2e_sidechain PROPERTIES TIMEOUT 2400 RUN_SERIAL TRUE)
+    # A page script of the chain's own pages (Hivemind: hivemind.js, with periods of 45 seconds).
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/e2e/hivemind.js)
+      add_test(NAME webui_e2e_hivemind
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/e2e/run_sidechain.py
+          --app $<TARGET_FILE:chains-app>
+          --mainchain-bin ${WEBUI_MAINCHAIN_BIN_DIR}
+          --tmp ${CMAKE_CURRENT_BINARY_DIR}/e2e-hivemind
+          --shots ${CMAKE_CURRENT_BINARY_DIR}/e2e-shots
+          --port 29740
+          --script hivemind.js
+          --app-arg=-hivemindperiodseconds=45
+          --js-var PERIOD=45
+      )
+      set_tests_properties(webui_e2e_hivemind PROPERTIES TIMEOUT 2400 RUN_SERIAL TRUE)
+    endif()
   endif()
 elseif(WEBUI_TEST_HOOKS AND XVFB_RUN_EXECUTABLE AND Python3_Interpreter_FOUND)
   add_test(NAME webui_e2e_smoke
