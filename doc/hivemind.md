@@ -307,11 +307,13 @@ The rules of the audits apply from the genesis block on every network.
 ## Commands
 
 Node: `gethivemindinfo`, `listdecisions`, `getdecision`, `listmarkets`,
-`getmarket`, `quotetrade`, `listreputation`, `listpositions`.
+`getmarket`, `quotetrade`, `listreputation`, `listpositions`, `getballot`.
 
 Wallet: `createdecision`, `createmarket`, `buyshares`, `sellshares`,
 `transfervotecoin`, `sealvote`, `revealvote`, `sealballot`, `revealballot`,
-`getwalletreputation`, `getwalletpositions`.
+`getwalletreputation`, `getwalletpositions`. The wallet checks an action against the rules of the
+chain (texts of 1 to 400 bytes, and `hivemind::CheckTx`) before it commits its transaction: what the
+chain refuses is never kept.
 
 In `hivemind-app`: the pages Markets, Portfolio, Voting center, Decisions,
 Create, Votecoin and Payouts, in the Chain section, and four cards on the home

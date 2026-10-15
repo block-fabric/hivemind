@@ -415,23 +415,39 @@ sealvote, revealvote, sealballot, revealballot, as keyed methods).
 
 | Page | What it does |
 |---|---|
-| Markets | The markets as cards: search (title, decisions, id), status (trading, being voted on, paid out), kind (yes or no, a scale, several outcomes), category (a word in brackets at the start of a title, as the wizard writes it), the wallet's; sorted by age, shares sold, depth, closing time, uncertainty. A market (`hm/MarketView.svelte`): the chance of each outcome over time, its decisions, the positions of the wallet with their profit or loss, who holds shares, and the trade panel (`hm/TradePanel.svelte`) |
+| Markets | The markets as cards: search (title, decisions, id), status (trading, being voted on, paid out), kind (yes or no, a scale, several outcomes), category (a word in brackets at the start of a title, as the wizard writes it), the wallet's; sorted by age, shares sold, liquidity, closing time, uncertainty. A market (`hm/MarketView.svelte`): the chance of each outcome over time, its decisions, the positions of the wallet with their profit or loss, who holds shares, and the trade panel (`hm/TradePanel.svelte`) |
 | Trade panel | Buy or sell an outcome, in coins to spend or shares; the cost worked out as the chain's market maker works it out (LMSR, `hm/model.ts`) and quoted by the node (`quotetrade`); the average price, the price impact, the fee, the chance after, what it pays if right; the slippage chosen sets the `maxcost` of a purchase or the `minproceeds` of a sale |
-| Portfolio | The positions of the wallet: worth now, what they pay if right, what they cost and made; the trades placed in the app |
+| Portfolio | The positions of the wallet: worth now, what they pay if right, what they cost and made, "Sell…" (the market opened on the Sell side of the outcome held); the trades placed in the app. Its rows, and those of Decisions and Payouts, are reached with the keyboard |
 | Voting center | The decisions to vote on: an answer each, sealed alone (`sealvote`) or several closing together in one ballot (`sealballot`); the votes to reveal in the reveal phase, with the answer the app kept (`revealvote`, `revealballot`); deadlines counting down; the decisions coming up and waiting to be resolved; the votes of the wallet and how they fared; reminders |
 | Decisions | Every decision, filtered, a page at a time, with its votes and markets; the calendar of the periods (the phase now, the twelve periods ahead) |
-| Create | A wizard: a market on a yes or no question, a number on a scale, or one of 2 to 4 options (a decision each), or on decisions listed already, or a decision alone; the question, the timing with its timeline, the title, category, liquidity and fee; a preview with what it costs, checked as the chain checks it. A market on new decisions is opened once they are in a block (`hm/creation.svelte.ts`) |
+| Create | A wizard: a market on a yes or no question, a number on a scale, or one of 2 to 4 options (a decision each), or on decisions listed already, or a decision alone; the question, the timing (in periods, after an amount of time, or on a date, as chains-qt took it) with its timeline, the title, category, liquidity and fee; a preview with what it costs, checked as the chain checks it. A market on new decisions is opened once they are in a block (`hm/creation.svelte.ts`) |
 | Votecoin | The votecoin (reputation) of the wallet by account and its share, its history, a transfer checked against the least holding, the largest holders |
 | Payouts | What the markets paid the wallet: outputs of a coinbase to its accounts of the markets (labelled "market shares", "market author", "decision author" by the wallet) and to its voters; the markets settled and what a share of each outcome paid; the positions waiting for the vote |
 | Home | Cards: My positions, Closing soon, Votes due, Votecoin |
 
 **The journal.** The chain keeps no history of trades or prices, and the wallet does not keep the
-answer of a sealed vote (it needs it again to reveal it). The app keeps them in its preferences (key
-`hivemind`, per network, bounded: `hm/store.svelte.ts`): the answers sealed (as chains-qt kept them in
-QSettings), the votes revealed, the trades it placed, the prices it saw (the charts), the votecoin of
-each wallet over time, the decisions and markets each wallet made, the reminders given. What it did not
-see is not made up: a profit or loss needs the trades placed in the app, a chart starts at even odds
-when the market opened.
+answer of a sealed vote (it needs it again to reveal it). The app keeps them in files of the data
+directory of the network (host methods `hivemind.store.load`, `hivemind.store.seals`,
+`hivemind.store.journal` in `src/webui/local.cpp`; written whole and flushed before they replace the
+old file; `hm/store.svelte.ts`):
+
+- `hivemind-seals.json`: the answers sealed (as chains-qt kept them in QSettings), written at once,
+  with no cap but a sanity one (32 MB). When they cannot be written the user is told, with the
+  answers, which are needed to reveal the votes;
+- `hivemind-journal.json`: the votes revealed, the trades it placed, the prices it saw (the charts),
+  the votecoin of each wallet over time, the decisions and markets each wallet made, the reminders
+  given (bounded). When it cannot be written the user is told once.
+
+A journal an older version kept in the preferences of the app (capped at 256 kB, where a full
+journal could no longer be saved and the seals were lost: audit port-1 #1) is moved to the files.
+A file that cannot be read is kept aside as `<file>.unreadable`. A ballot the app has no record of is
+revealed with answers given by hand: `getballot` names the decisions it covers. What it did not see
+is not made up: a profit or loss needs the trades placed in the app, a chart starts at even odds when
+the market opened.
+
+**Whose.** The "yours" badges and the "Mine" and "Listed by this wallet" filters take the authors of
+the decisions and markets on the chain, asked of the wallet once each (`getaddressinfo`: ismine), as
+chains-qt did, with what the app recorded (audit port-1 #7).
 
 The rules of the kit hold: text of the chain (questions, titles, options, accounts) with `SafeText` or
 `translate="no"`, the app's words through `t()`, no inline style (bars set through the CSS object
