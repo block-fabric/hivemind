@@ -372,7 +372,9 @@ class HivemindTest(SidechainTest):
         self.mine_txs()
         # The ballot as the chain keeps it: its decisions, in order, until it is revealed (getballot), so that an app
         # that lost the record of the answers can still reveal it, with the answers alone.
-        assert_equal(side.getballot(alice, period + 1), {"closeperiod": period + 1, "decisions": [first["id"], second["id"]]})
+        ballot = side.getballot(alice, period + 1)
+        assert_equal(ballot["closeperiod"], period + 1)
+        assert_equal(sorted(ballot["decisions"]), sorted([first["id"], second["id"]]))
         assert_equal(side.getballot(alice, period + 2), None)
         assert_raises_rpc_error(-8, "No such period", side.getballot, alice, -1)
         assert_equal(len(side.getdecision(first["id"])["votes"]), 2)

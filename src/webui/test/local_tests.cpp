@@ -38,7 +38,7 @@ BOOST_AUTO_TEST_CASE(stores_of_hivemind)
     webui::local::WriteStore(path, value);
     const UniValue back{webui::local::ReadStore(path)};
     BOOST_CHECK_EQUAL(back.write(), value.write());
-    BOOST_CHECK(!fs::exists(fs::path{path.std_path().string() + ".new"}));
+    BOOST_CHECK(!fs::exists(fs::PathFromString(fs::PathToString(path) + ".new")));
 
     // What is not an object, or too large, is refused, and the file stays as it was.
     BOOST_CHECK_THROW(webui::local::WriteStore(path, UniValue{"text"}), webui::HostError);
@@ -53,7 +53,7 @@ BOOST_AUTO_TEST_CASE(stores_of_hivemind)
         broken << "{\"sealed\": {";
     }
     BOOST_CHECK(webui::local::ReadStore(path).isNull());
-    BOOST_CHECK(fs::exists(fs::path{path.std_path().string() + ".unreadable"}));
+    BOOST_CHECK(fs::exists(fs::PathFromString(fs::PathToString(path) + ".unreadable")));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

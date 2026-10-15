@@ -46,7 +46,7 @@ UniValue ReadStore(const fs::path& path)
     if (!value.read(text.str()) || !value.isObject()) {
         // Kept aside rather than lost: what the user may need to reveal a vote by hand.
         std::error_code ec;
-        fs::rename(path, fs::path{path.std_path().string() + ".unreadable"}, ec);
+        fs::rename(path, fs::PathFromString(fs::PathToString(path) + ".unreadable"), ec);
         return UniValue{};
     }
     return value;
@@ -58,7 +58,7 @@ void WriteStore(const fs::path& path, const UniValue& value)
     const std::string text{value.write()};
     if (text.size() > MAX_STORE_BYTES) throw HostError(strprintf("The record is too large (%u bytes; at most %u)", text.size(), MAX_STORE_BYTES));
     // Written whole to another file, flushed to the disk, then put in place: a crash leaves the old one or the new one.
-    const fs::path temp{path.std_path().string() + ".new"};
+    const fs::path temp{fs::PathFromString(fs::PathToString(path) + ".new")};
     FILE* file{fsbridge::fopen(temp, "wb")};
     if (!file) throw HostError(strprintf("%s cannot be written", fs::PathToString(temp)));
     const bool written{std::fwrite(text.data(), 1, text.size(), file) == text.size() && FileCommit(file)};
