@@ -11,6 +11,7 @@
   import Icon from '../../components/Icon.svelte';
   import NoWallet from '../../components/NoWallet.svelte';
   import { ask, errorText, inform, walletRpc } from '../../lib/dialogs.svelte';
+  import { rpc } from '../../lib/rpc';
   import { formatTime, shortHash } from '../../lib/format';
   import { go, PAGES } from '../../lib/nav.svelte';
   import { toast, wallets, walletsEnabled } from '../../lib/state.svelte';
@@ -70,8 +71,10 @@
     try {
       const done = await walletRpc<{ txid: string }>(wallet, 'sealvote', [voter, d.id, parsed.value]);
       if (!done) return;
-      noteSealed({ wallet, account: voter, decision: d.id, answer: parsed.value, close: d.closeperiod, time: Math.floor(Date.now() / 1000), txid: done.txid });
-      toast('success', t('Vote sealed'), t('Reveal it in the last third of period %1. The app keeps your answer until then.', String(d.closeperiod)));
+      // Kept at once, in a file of its own: the answer is needed to reveal the vote.
+      if (await noteSealed({ wallet, account: voter, decision: d.id, answer: parsed.value, close: d.closeperiod, time: Math.floor(Date.now() / 1000), txid: done.txid })) {
+        toast('success', t('Vote sealed'), t('Reveal it in the last third of period %1. The app keeps your answer until then.', String(d.closeperiod)));
+      }
       void refreshHivemind();
     } catch (e) {
       await inform(t('Seal vote'), errorText(e), 'error');
@@ -111,8 +114,8 @@
       const done = await walletRpc<{ txid: string; closeperiod: number }>(wallet, 'sealballot', [voter, votes]);
       if (!done) return;
       const time = Math.floor(Date.now() / 1000);
-      for (const [id, answer] of Object.entries(votes)) noteSealed({ wallet, account: voter, decision: id, answer, close: done.closeperiod, time, txid: done.txid, ballot: true });
-      toast('success', t('Ballot sealed'), t('%1 votes, revealed together in period %2.', String(ballot.length), String(done.closeperiod)));
+      const kept = await noteSealed(...Object.entries(votes).map(([id, answer]) => ({ wallet, account: voter, decision: id, answer, close: done.closeperiod, time, txid: done.txid, ballot: true })));
+      if (kept) toast('success', t('Ballot sealed'), t('%1 votes, revealed together in period %2.', String(ballot.length), String(done.closeperiod)));
       void refreshHivemind();
     } catch (e) {
       await inform(t('Seal a ballot'), errorText(e), 'error');
@@ -121,10 +124,63 @@
     }
   }
 
+  /**
+   * The ballots of the voter the chain has, by the period they close in (getballot): a vote sealed in a ballot is
+   * revealed with the others of the ballot, also when this app has no record of the answers (they are then given
+   * by hand).
+   */
+  let ballots = $state<Record<string, string[] | null>>({});
+  const ballotKey = (account: string, close: number) => `${account}|${close}`;
+  $effect(() => {
+    const account = voter;
+    const periods = [...new Set(revealDue.filter((d) => !sealed.has(d.id)).map((d) => d.closeperiod))];
+    for (const close of periods) {
+      const key = ballotKey(account, close);
+      if (key in ballots) continue;
+      ballots[key] = null;
+      rpc
+        .raw<{ decisions: string[] } | null>('getballot', [account, close])
+        .then((b) => (ballots = { ...ballots, [key]: b?.decisions ?? [] }))
+        .catch(() => (ballots = { ...ballots, [key]: [] }));
+    }
+  });
+  /** The decisions of the ballot a decision was sealed in, when the chain has one and this app has no record of it. */
+  function chainBallot(d: Decision): string[] {
+    const list = ballots[ballotKey(voter, d.closeperiod)];
+    return list && list.includes(d.id) ? list : [];
+  }
+
   async function reveal(d: Decision) {
     const wallet = wallets.current;
     if (wallet === null || !voter) return;
     const rec = sealed.get(d.id);
+    const inBallot = !rec ? chainBallot(d) : [];
+    if (inBallot.length) {
+      // A ballot this app has no record of: revealed whole, with the answers given by hand for each of its decisions.
+      const votes: Record<string, string> = {};
+      for (const id of inBallot) {
+        const other = hm.decisions.find((x) => x.id === id);
+        const p = other ? parseAnswer(answers[id] ?? '', other) : null;
+        if (!p || !p.ok) {
+          await inform(t('Reveal vote'), t('This vote was sealed in a ballot of %1 decisions: give the answer you sealed for each of them, then reveal them together.', String(inBallot.length)), 'warning');
+          return;
+        }
+        votes[id] = p.value;
+      }
+      busy = d.id;
+      try {
+        const done = await walletRpc<{ txid: string }>(wallet, 'revealballot', [voter, votes]);
+        if (!done) return;
+        for (const [id, answer] of Object.entries(votes)) noteRevealed(wallet, voter, id, answer, done.txid);
+        toast('success', t('Ballot revealed'), t('%1 votes, in the transaction %2.', String(inBallot.length), shortHash(done.txid, 10)));
+        void refreshHivemind();
+      } catch (e) {
+        await inform(t('Reveal vote'), errorText(e), 'error');
+      } finally {
+        busy = null;
+      }
+      return;
+    }
     const answer = rec?.answer ?? parseAnswer(answerOf(d), d);
     const value = typeof answer === 'string' ? answer : answer.ok ? answer.value : null;
     if (value === null) {
@@ -218,6 +274,7 @@
               <div class="q"><SafeText text={d.text} /></div>
               <div class="meta">
                 {#if rec}<span>You sealed <strong>{shownAnswer(rec.answer)}</strong>{rec.ballot ? ' (in a ballot)' : ''}</span>{:else}
+                  {#if chainBallot(d).length}<span class="muted small">Sealed in a ballot of {chainBallot(d).length} decisions: give each answer, they are revealed together</span>{/if}
                   <span class="answer">
                     {#if d.scaled}<input type="text" inputmode="numeric" placeholder="The number you sealed" bind:value={answers[d.id]} aria-label="The answer you sealed" />{:else}
                       <select class="pill" bind:value={answers[d.id]} aria-label="The answer you sealed"><option value="">The answer you sealed</option><option value="yes">Yes</option><option value="no">No</option><option value="unknown">Not known yet</option></select>

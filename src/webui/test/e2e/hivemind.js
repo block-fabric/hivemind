@@ -67,9 +67,13 @@
     await rpc('createwallet', ['hm']);
     await waitFor('the wallet in the page', () => T().wallets.current === 'hm');
     const desc = await rpc('getdescriptorinfo', [`wpkh(${GENESIS_VOTECOIN_KEY})`]);
+    // A command of the console that does more than read waits for the desktop (audit port-1 #3): accepted here.
+    await host('test.confirmAnswer', { yes: true });
     const imported = await host('console.run', { line: `importdescriptors '[{"desc": "wpkh(${GENESIS_VOTECOIN_KEY})#${desc.checksum}", "timestamp": "now"}]'`, wallet: 'hm' });
     await check('the key of the reputation imported in the console', imported.ok && /"success": true/.test(imported.result), JSON.stringify(imported));
     const deposit = await rpc('getdepositaddress', [], 'hm');
+    // The wallet of the mainchain node pays: on the desktop's word (audit port-1 #4), accepted here.
+    await host('test.confirmAnswer', { yes: true });
     await host('peg.deposit', { destination: deposit.depositaddress, amount: '20' });
     await rpc('setbmm', [true, await rpc('getnewaddress', [], 'hm'), true]);
     await waitFor('the deposit credited', async () => (await rpc('getbalances', [], 'hm')).mine.trusted >= 20, 240000);
@@ -160,7 +164,9 @@
     $(`#seal-${decision.id.slice(0, 8)}`).click();
     await waitFor('the vote sealed on the chain', async () => (await rpc('getdecision', [decision.id])).votes.length === 1, 60000);
     await waitFor('the vote shown sealed', () => text('.voting').includes('Sealed: Yes'), 30000);
-    await check('the vote sealed, its answer kept by the app', true);
+    const stored = await host('hivemind.store.load');
+    const kept = Object.values((stored.seals && stored.seals.sealed) || {}).find((r) => r.decision === decision.id);
+    await check('the vote sealed, its answer kept by the app in a file of its own (audit port-1 #1)', !!kept && kept.answer === 'yes', JSON.stringify(stored.seals));
     await sleep(1000);
     await shot('hm-voting-sealed');
     await until('the reveal phase', () => clock().revealIn < -1 && clock().left > 3, PERIOD * 3000);

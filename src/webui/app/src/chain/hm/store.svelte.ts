@@ -2,14 +2,18 @@
 // decisions, the markets, the holders of reputation) and what the wallet holds (its shares, its
 // reputation), asked again with every block of this chain, one refresh at a time.
 //
-// And a journal of what the chain does not keep, in the preferences of the app (per network, key
-// "hivemind"): the answers of the votes this app sealed (the wallet needs the answer again to reveal it,
-// as chains-qt kept it in QSettings), the votes revealed, the trades it made (for the profit and loss),
-// the prices of the markets as it saw them (the charts), the reputation of each wallet over time, and
-// the reminders it gave.
+// And a journal of what the chain does not keep, in files of the data directory of the network (host
+// methods hivemind.store.*, src/webui/local.cpp): the answers of the votes this app sealed (the wallet needs
+// the answer again to reveal it, as chains-qt kept it in QSettings), in a file of their own, written at once;
+// and the votes revealed, the trades it made (for the profit and loss), the prices of the markets as it saw
+// them (the charts), the reputation of each wallet over time, and the reminders it gave. (In the preferences
+// of the app, capped at 256 kB, a full journal could no longer be saved and the seals were lost: audit port-1
+// #1. A journal left there by an older version is moved to the files.)
+import { request } from '../../lib/bridge';
+import { errorText, inform } from '../../lib/dialogs.svelte';
 import { t } from '../../lib/i18n.svelte';
 import { host, rpc } from '../../lib/rpc';
-import { node, wallets } from '../../lib/state.svelte';
+import { node, toast, wallets } from '../../lib/state.svelte';
 import { voteStage, type Decision, type Holding, type HivemindInfo, type Market, type TradeRecord, type WalletPosition } from './model';
 
 export interface SealRecord {
@@ -69,7 +73,7 @@ export interface Journal {
   mine: Record<string, string[]>;
 }
 
-/** Sizes the journal is kept to: the preferences hold 256 kB in all. */
+/** Sizes the journal is kept to (a few hundred kB at most; the seals are not capped). */
 const MAX_VOTES = 200;
 const MAX_TRADES = 400;
 const MAX_POINTS = 60;
@@ -120,17 +124,45 @@ export function onRefresh(fn: () => unknown): void {
 }
 let journalLoaded = false;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+/** Whether the user was told that the journal cannot be saved (once). */
+let journalWarned = false;
 
-/** Read the journal from the preferences of the app (once). */
+/** The stores of the host: the seals, the rest of the journal (null when none). */
+interface Stores {
+  seals: { sealed?: unknown } | null;
+  journal: unknown;
+}
+
+/** Read the journal from the files of the host (once); one an older version left in the preferences is moved there. */
 export async function loadJournal(): Promise<void> {
   if (journalLoaded) return;
   journalLoaded = true;
+  let stores: Stores | null = null;
   try {
-    const raw = (await host.prefs()).hivemind;
-    hm.journal = sanitizeJournal(raw);
+    stores = await request<Stores>('host', 'hivemind.store.load', {});
   } catch {
-    hm.journal = emptyJournal();
+    stores = null;
   }
+  let fromPrefs: unknown = null;
+  if (!stores || (stores.journal === null && stores.seals === null)) {
+    try {
+      fromPrefs = (await host.prefs()).hivemind ?? null;
+    } catch {
+      fromPrefs = null;
+    }
+  }
+  if (fromPrefs) {
+    hm.journal = sanitizeJournal(fromPrefs);
+    if (stores) {
+      // Moved: the seals and the journal to their files, then out of the preferences.
+      const moved = (await saveSeals()) && (await writeJournal());
+      if (moved) host.setPrefs({ hivemind: null }).catch(() => undefined);
+    }
+    return;
+  }
+  const journal = sanitizeJournal(stores?.journal ?? null);
+  journal.sealed = sanitizeJournal({ sealed: stores?.seals?.sealed ?? {} }).sealed;
+  hm.journal = journal;
 }
 
 /** A journal read back, with what is not of the expected shape left out. */
@@ -160,29 +192,68 @@ export function sanitizeJournal(raw: unknown): Journal {
   return j;
 }
 
+/** Write the journal but the seals; false (and the user told, once) when it cannot be. */
+async function writeJournal(): Promise<boolean> {
+  const { sealed: _sealed, ...rest } = $state.snapshot(hm.journal);
+  void _sealed;
+  try {
+    await request('host', 'hivemind.store.journal', { value: rest });
+    journalWarned = false;
+    return true;
+  } catch (e) {
+    if (!journalWarned) {
+      journalWarned = true;
+      toast('warning', t('The journal of Hivemind could not be saved'), t('Your trades and the charts of the prices may be missing after a restart: %1', errorText(e)), 15000);
+    }
+    return false;
+  }
+}
+
 /** Write the journal back, a moment after the last change. */
 export function saveJournal(): void {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    host.setPrefs({ hivemind: $state.snapshot(hm.journal) }).catch(() => undefined);
+    void writeJournal();
   }, 400);
+}
+
+/**
+ * Write the answers of the sealed votes now, in their own file. False when they cannot be: the caller says
+ * so, since a vote whose answer is lost cannot be revealed and does not count.
+ */
+export async function saveSeals(): Promise<boolean> {
+  try {
+    await request('host', 'hivemind.store.seals', { value: { sealed: $state.snapshot(hm.journal.sealed) } });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function sealKey(wallet: string, account: string, decision: string): string {
   return `${wallet}|${account}|${decision}`;
 }
 
-/** Remember a sealed answer, to reveal it later. */
-export function noteSealed(rec: SealRecord): void {
-  hm.journal.sealed[sealKey(rec.wallet, rec.account, rec.decision)] = rec;
-  saveJournal();
+/**
+ * Remember sealed answers, to reveal them later: written at once. When they cannot be, the user is told, with
+ * the answers, which are needed to reveal the votes (the voting center can reveal with answers given by hand).
+ */
+export async function noteSealed(...recs: SealRecord[]): Promise<boolean> {
+  for (const rec of recs) hm.journal.sealed[sealKey(rec.wallet, rec.account, rec.decision)] = rec;
+  if (await saveSeals()) return true;
+  const answers = recs.map((r) => `${r.decision.slice(0, 12)}…: ${r.answer}`).join('\n');
+  await inform(t('The answer of your vote could not be saved'), t('Write it down: it is needed to reveal the vote in period %1, or the vote does not count.', String(recs[0]?.close ?? '')), 'error', answers);
+  return false;
 }
 
 /** A vote revealed: from the sealed ones to the votes of the wallet. */
 export function noteRevealed(wallet: string, account: string, decision: string, answer: string, txid: string): void {
   const key = sealKey(wallet, account, decision);
-  delete hm.journal.sealed[key];
+  if (key in hm.journal.sealed) {
+    delete hm.journal.sealed[key];
+    void saveSeals();
+  }
   const text = hm.decisions.find((d) => d.id === decision)?.text ?? '';
   hm.journal.votes = [{ wallet, account, decision, text, answer, time: Math.floor(Date.now() / 1000), txid }, ...hm.journal.votes.filter((v) => !(v.wallet === wallet && v.account === account && v.decision === decision))].slice(0, MAX_VOTES);
   saveJournal();
@@ -267,13 +338,15 @@ export function noteOutcomes(decisions: readonly Decision[]): boolean {
     return { ...v, outcome, agreed };
   });
   // Seals of decisions resolved, or no longer on the chain, are no use any more.
+  let sealsChanged = false;
   for (const [k, s] of Object.entries(hm.journal.sealed)) {
     const d = byId.get(s.decision);
     if (!d || d.status === 'resolved') {
       delete hm.journal.sealed[k];
-      changed = true;
+      sealsChanged = true;
     }
   }
+  if (sealsChanged) void saveSeals();
   return changed;
 }
 
@@ -412,5 +485,6 @@ export function resetHivemind(): void {
   lastTip = '';
   lastWallet = undefined;
   journalLoaded = false;
+  journalWarned = false;
   Object.assign(hm, { info: null, decisions: [], markets: [], positions: [], reputation: [], holders: [], details: {}, wallet: null, height: -1, error: '', loaded: false, journal: emptyJournal(), version: 0 });
 }

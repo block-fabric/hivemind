@@ -5,6 +5,8 @@
 #ifndef BITCOIN_WEBUI_LOCAL_H
 #define BITCOIN_WEBUI_LOCAL_H
 
+#include <univalue.h>
+#include <util/fs.h>
 #include <webui/bridge.h>
 
 #include <functional>
@@ -34,6 +36,19 @@ using NodeFn = std::function<interfaces::Node&()>;
 
 /** Host methods of the chain's pages ("<chain>.something"), registered after the kit's. */
 void RegisterHost(Bridge& bridge, NodeFn node);
+
+/**
+ * Hivemind: the stores of what the chain does not keep (hivemind.store.load, hivemind.store.seals,
+ * hivemind.store.journal), JSON objects in files of the data directory of the network, written whole and
+ * flushed before they replace the old one.
+ */
+inline constexpr const char* SEALS_FILE{"hivemind-seals.json"};
+inline constexpr const char* JOURNAL_FILE{"hivemind-journal.json"};
+inline constexpr size_t MAX_STORE_BYTES{32 << 20};
+/** The object of a store; null when there is none (or it could not be read: then kept aside as <file>.unreadable). */
+UniValue ReadStore(const fs::path& path);
+/** Write a store (an object). Throws HostError. */
+void WriteStore(const fs::path& path, const UniValue& value);
 
 } // namespace webui::local
 

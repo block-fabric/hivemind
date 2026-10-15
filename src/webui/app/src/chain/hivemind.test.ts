@@ -1,5 +1,5 @@
 // The pages of Hivemind: what model.ts works out (the market maker, the names of the states, the clock
-// of the periods, the checks of the forms, the profit and loss), the journal kept in the preferences,
+// of the periods, the checks of the forms, the profit and loss), the journal kept in the files of the host,
 // and the pages driven against a pretend node: the markets and a market traded in, the wizard that lists
 // decisions and opens a market, the voting center sealing and revealing, votecoin moved, the payouts,
 // the cards of the home, and where the pages are in the menus.
@@ -109,6 +109,10 @@ let info: HivemindInfo = { ...INFO };
 let decisions: Decision[] = [];
 let markets: Market[] = [];
 let prefsStore: Record<string, unknown> = {};
+/** The stores of the host (hivemind.store.*: files of the data directory), and whether writing the seals fails. */
+let stores: { seals: unknown; journal: unknown } = { seals: null, journal: null };
+let sealsFail = false;
+let ballotOnChain: { decisions: string[] } | null = null;
 
 async function fakeNode(r: BridgeRequest): Promise<unknown> {
   calls.push(r);
@@ -156,6 +160,17 @@ async function fakeNode(r: BridgeRequest): Promise<unknown> {
       return { txid: id('c'), closeperiod: 3 };
     case 'getnewaddress':
       return OTHER;
+    case 'hivemind.store.load':
+      return structuredClone(stores);
+    case 'hivemind.store.seals':
+      if (sealsFail) throw Object.assign(new Error('The disk is full'), { code: -32000 });
+      stores.seals = structuredClone((r.params as { value: unknown }).value);
+      return true;
+    case 'hivemind.store.journal':
+      stores.journal = structuredClone((r.params as { value: unknown }).value);
+      return true;
+    case 'getballot':
+      return ballotOnChain;
     case 'prefs.get':
       return prefsStore;
     case 'prefs.set':
@@ -208,6 +223,9 @@ beforeEach(() => {
   decisions = DECISIONS.map((d) => ({ ...d }));
   markets = marketsNow();
   prefsStore = {};
+  stores = { seals: null, journal: null };
+  sealsFail = false;
+  ballotOnChain = null;
   calls.length = 0;
   resetHivemind();
   creation.jobs = [];
@@ -372,6 +390,50 @@ describe('the journal of the app', () => {
     expect(j.trades.length).toBe(1);
     expect(j.reminders).toBe(false);
     expect(sanitizeJournal(null).reminders).toBe(true);
+  });
+});
+
+describe('the journal in the files of the host (audit port-1 #1)', () => {
+  it('keeps the seals in a file of their own, written at once, whatever the size of the journal', async () => {
+    const { loadJournal, noteSealed, saveJournal } = await import('./hm/store.svelte');
+    await loadJournal();
+    // A journal past 256 kB (the cap of the preferences): written all the same.
+    const pts = Array.from({ length: 60 }, (_, i) => ({ h: i, t: i, p: Array.from({ length: 16 }, () => 625) }));
+    for (let i = 0; i < 40; i++) hm.journal.prices['m' + i + 'x'.repeat(60)] = pts;
+    hm.journal.votes = Array.from({ length: 200 }, () => ({ wallet: 'w', account: 'a'.repeat(42), decision: 'd'.repeat(64), text: 'Q'.repeat(400), answer: 'yes', time: 1, txid: 'f'.repeat(64) }));
+    expect(await noteSealed({ wallet: 'w', account: ME, decision: id('2'), answer: 'yes', close: 3, time: 1, txid: id('d') })).toBe(true);
+    expect((stores.seals as { sealed: Record<string, { answer: string }> }).sealed[`w|${ME}|${id('2')}`].answer).toBe('yes');
+    saveJournal();
+    await waitFor(() => expect(stores.journal).not.toBeNull(), { timeout: 2000 });
+    expect(JSON.stringify(stores.journal).length).toBeGreaterThan(256 * 1024);
+    // The seals are not in the journal file, and come back from their own after a restart.
+    expect((stores.journal as Record<string, unknown>).sealed).toBeUndefined();
+    resetHivemind();
+    await loadJournal();
+    expect(Object.keys(hm.journal.sealed)).toEqual([`w|${ME}|${id('2')}`]);
+    expect(Object.keys(hm.journal.prices).length).toBe(40);
+  });
+
+  it('says so, with the answer, when the seal cannot be written', async () => {
+    const { loadJournal, noteSealed } = await import('./hm/store.svelte');
+    render(DialogHost);
+    await loadJournal();
+    sealsFail = true;
+    const kept = noteSealed({ wallet: 'w', account: ME, decision: id('2'), answer: 'no', close: 3, time: 1, txid: id('d') });
+    await waitFor(() => expect(dialogs.queue[0]?.title).toBe('The answer of your vote could not be saved'));
+    expect(dialogs.queue[0]?.informative).toContain(': no');
+    await answer('ok');
+    expect(await kept).toBe(false);
+  });
+
+  it('moves a journal an older version left in the preferences to the files', async () => {
+    const { loadJournal } = await import('./hm/store.svelte');
+    prefsStore = { hivemind: { sealed: { k: { wallet: 'w', account: ME, decision: id('2'), answer: 'yes', close: 3, time: 1, txid: 'x' } }, trades: [{ wallet: 'w', market: 'm', state: 1, shares: 1, coins: 1, time: 1 }] } };
+    await loadJournal();
+    expect(Object.keys(hm.journal.sealed)).toEqual(['k']);
+    expect((stores.seals as { sealed: Record<string, unknown> }).sealed.k).toBeTruthy();
+    expect((stores.journal as { trades: unknown[] }).trades.length).toBe(1);
+    await waitFor(() => expect(prefsStore.hivemind).toBeNull());
   });
 });
 
@@ -544,6 +606,34 @@ describe.runIf(CHAIN.name === 'Hivemind')('the pages of Hivemind', () => {
     expect(hm.journal.votes.map((v) => v.answer).sort()).toEqual(['4', 'yes']);
     // And a reminder was given while votes were due.
     expect(called('app.notify').length).toBeGreaterThan(0);
+  });
+
+  it('Voting center: a ballot this app has no record of is revealed with the answers given by hand (getballot)', async () => {
+    ballotOnChain = { decisions: [id('2'), id('3')] };
+    info = { ...INFO, phase: 'reveal' };
+    // The chain has the voter's sealed votes; this app has no record of them.
+    const before = decisions;
+    decisions = before.map((d) => d);
+    render(Voting);
+    render(DialogHost);
+    await loaded();
+    hm.details = { [id('2')]: { ...decisions[1], votes: [{ voter: ME, revealed: false }] }, [id('3')]: { ...decisions[2], votes: [{ voter: ME, revealed: false }] } };
+    await waitFor(() => expect(screen.getByRole('heading', { name: /Reveal now/ })).toBeTruthy());
+    await waitFor(() => expect(called('getballot').length).toBeGreaterThan(0));
+    expect(called('getballot')[0].params).toEqual([ME, 3]);
+    await waitFor(() => expect(screen.getAllByText(/Sealed in a ballot of 2 decisions/).length).toBe(2));
+    // Only one answer: the ballot needs both.
+    const selects = screen.getAllByRole('combobox', { name: 'The answer you sealed' });
+    await fireEvent.change(selects[0], { target: { value: 'yes' } });
+    await fireEvent.click(document.querySelector(`#reveal-${id('2').slice(0, 8)}`)!);
+    await waitFor(() => expect(dialogs.queue[0]?.message).toMatch(/ballot of 2 decisions/));
+    await answer('ok');
+    expect(called('revealballot').length).toBe(0);
+    await fireEvent.input(screen.getByRole('textbox', { name: 'The answer you sealed' }), { target: { value: '4' } });
+    await fireEvent.click(document.querySelector(`#reveal-${id('2').slice(0, 8)}`)!);
+    await waitFor(() => expect(called('revealballot').length).toBe(1));
+    expect(called('revealballot')[0].params).toEqual([ME, { [id('2')]: 'yes', [id('3')]: '4' }]);
+    expect(called('revealvote').length).toBe(0);
   });
 
   it('Votecoin: the holdings, a transfer checked against the least holding, then sent', async () => {
