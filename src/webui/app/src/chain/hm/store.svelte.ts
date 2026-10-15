@@ -443,12 +443,17 @@ async function refreshOnce(): Promise<void> {
   const height = node.tip?.height ?? -1;
   const now = Math.floor(Date.now() / 1000);
   try {
-    const [info, decisions, markets, holders] = await Promise.all([
+    const [info, decisionsRaw, marketsRaw, holdersRaw] = await Promise.all([
       rpc.raw<HivemindInfo>('gethivemindinfo'),
       rpc.raw<Decision[]>('listdecisions'),
       rpc.raw<Market[]>('listmarkets'),
       rpc.raw<Holding[]>('listreputation', [100]),
     ]);
+    // Lists, whatever a node that is not Hivemind's answers.
+    const decisions = Array.isArray(decisionsRaw) ? decisionsRaw : [];
+    const markets = Array.isArray(marketsRaw) ? marketsRaw : [];
+    const holders = Array.isArray(holdersRaw) ? holdersRaw : [];
+    if (!info) throw new Error(t('This node does not run Hivemind.'));
     if (!hm.loaded) {
       // The first time: the markets and the decisions at once; what the wallet holds, the votes and the authors
       // follow (the first visit of Markets waited for all of it: audit port-1 #10).
