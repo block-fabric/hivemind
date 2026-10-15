@@ -21,7 +21,8 @@
   const open = (id: string) => go('markets', `m-${id}`);
 
   type StatusFilter = 'trading' | 'closed' | 'settled' | 'all';
-  let status = $state<StatusFilter>('trading');
+  /** null until chosen: the markets that trade, or all of them when none does. */
+  let chosenStatus = $state<StatusFilter | null>(null);
   let kind = $state<MarketKind | 'all'>('all');
   let category = $state('');
   let onlyMine = $state(false);
@@ -36,6 +37,7 @@
     settled: hm.markets.filter((m) => m.status === 'settled').length,
     all: hm.markets.length,
   });
+  const status = $derived<StatusFilter>(chosenStatus ?? (counts.trading || !counts.all ? 'trading' : 'all'));
   const categories = $derived([...new Set(hm.markets.map((m) => categoryOf(m.text)).filter((c): c is string => !!c))].sort());
 
   function uncertainty(m: Market): number {
@@ -101,10 +103,10 @@
         <input type="search" placeholder="Search markets: words of the title or of a decision, an id" bind:value={search} aria-label="Search markets" />
       </div>
       <div class="hm-chips" role="group" aria-label="Status">
-        <button type="button" class="hm-chip" aria-pressed={status === 'trading'} onclick={() => (status = 'trading')}>Trading <span class="count">{counts.trading}</span></button>
-        <button type="button" class="hm-chip" aria-pressed={status === 'closed'} onclick={() => (status = 'closed')}>Being voted on <span class="count">{counts.closed}</span></button>
-        <button type="button" class="hm-chip" aria-pressed={status === 'settled'} onclick={() => (status = 'settled')}>Paid out <span class="count">{counts.settled}</span></button>
-        <button type="button" class="hm-chip" aria-pressed={status === 'all'} onclick={() => (status = 'all')}>All <span class="count">{counts.all}</span></button>
+        <button type="button" class="hm-chip" aria-pressed={status === 'trading'} onclick={() => (chosenStatus = 'trading')}>Trading <span class="count">{counts.trading}</span></button>
+        <button type="button" class="hm-chip" aria-pressed={status === 'closed'} onclick={() => (chosenStatus = 'closed')}>Being voted on <span class="count">{counts.closed}</span></button>
+        <button type="button" class="hm-chip" aria-pressed={status === 'settled'} onclick={() => (chosenStatus = 'settled')}>Paid out <span class="count">{counts.settled}</span></button>
+        <button type="button" class="hm-chip" aria-pressed={status === 'all'} onclick={() => (chosenStatus = 'all')}>All <span class="count">{counts.all}</span></button>
       </div>
       <div class="hm-chips" role="group" aria-label="Kind">
         <button type="button" class="hm-chip" aria-pressed={kind === 'all'} onclick={() => (kind = 'all')}>Every kind</button>

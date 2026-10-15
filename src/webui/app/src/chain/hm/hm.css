@@ -1,14 +1,15 @@
 /* The pages of Hivemind: shared pieces, in the colour tokens of themes.css only (text in the text
    tokens; the colours of the states are for lines, dots and bars, never for text). */
 
-/* The colour of a state of a market: --hm-c, set by .hm-c0 ... .hm-c7 (states beyond take them again). */
-.hm-c0 { --hm-c: var(--accent); }
-.hm-c1 { --hm-c: var(--negative); }
+/* The colour of a state of a market: --hm-c, set by .hm-c0 ... .hm-c7 (states beyond take them again).
+   No (state 0) in the colour of a loss, Yes (state 1) in the accent. */
+.hm-c0 { --hm-c: var(--negative); }
+.hm-c1 { --hm-c: var(--accent); }
 .hm-c2 { --hm-c: var(--warning); }
 .hm-c3 { --hm-c: var(--link); }
-.hm-c4 { --hm-c: var(--positive); }
-.hm-c5 { --hm-c: var(--text-muted); }
-.hm-c6 { --hm-c: var(--accent-strong); }
+.hm-c4 { --hm-c: var(--text-muted); }
+.hm-c5 { --hm-c: var(--accent-strong); }
+.hm-c6 { --hm-c: var(--positive); }
 .hm-c7 { --hm-c: var(--line-strong); }
 
 .hm-dot {

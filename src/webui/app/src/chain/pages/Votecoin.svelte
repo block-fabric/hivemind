@@ -187,7 +187,7 @@
                 <tr>
                   <td class="mono"><span translate="no">{a.account}</span> <CopyButton text={a.account} label="Copy the account" /></td>
                   <td class="end num">{formatUnits(a.amount, 8)}</td>
-                  <td class="share"><span class="hm-bar hm-c0"><span use:barWidth={supply ? a.amount / supply : 0}></span></span><span class="num small">{supply ? formatChance(a.amount / supply) : '–'}</span></td>
+                  <td class="share"><span class="hm-bar hm-c1"><span use:barWidth={supply ? a.amount / supply : 0}></span></span><span class="num small">{supply ? formatChance(a.amount / supply) : '–'}</span></td>
                 </tr>
               {/each}
             </tbody>

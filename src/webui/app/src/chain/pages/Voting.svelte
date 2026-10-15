@@ -178,7 +178,7 @@
         </p>
       {/if}
     </div>
-    <label class="check"><input type="checkbox" checked={hm.journal.reminders} onchange={(e) => setReminders((e.currentTarget as HTMLInputElement).checked)} /> <span><Icon name="bell" size={14} /> Remind me when a vote is due</span></label>
+    <label class="check remind"><input type="checkbox" checked={hm.journal.reminders} onchange={(e) => setReminders((e.currentTarget as HTMLInputElement).checked)} /> <span><Icon name="bell" size={14} /> Remind me when a vote is due</span></label>
   </header>
 
   {#if noWallet}
@@ -252,7 +252,7 @@
                 {#if rec}<span class="hm-stage live">Sealed: {shownAnswer(rec.answer)}</span>{:else if onChain}<span class="hm-stage live">Sealed</span>{:else}<span class="hm-stage vote">Not voted</span>{/if}
               </span>
               <strong class="q"><SafeText text={d.text} /></strong>
-              <span class="muted small">Seal before the reveal phase of period {d.closeperiod}: <Countdown info={info!} target={voteDeadline(d, info!, 'seal') ?? 0} urgent={info?.periodblocks ? 2 : 3600} /> · {hm.details[d.id]?.votes?.length ?? 0} vote(s) so far{#if view !== null} · the market says {formatChance(view)}{/if}</span>
+              <span class="muted small">Seal before the reveal phase of period {d.closeperiod}: <Countdown info={info!} target={voteDeadline(d, info!, 'seal') ?? 0} urgent={info?.periodblocks ? 2 : 3600} /> · {hm.details[d.id]?.votes?.length ?? 0} vote(s) so far{#if view !== null}{' · '}<span>the market says {formatChance(view)}</span>{/if}</span>
               <div class="answers" role="radiogroup" aria-label="Your answer">
                 {#if d.scaled}
                   <input type="text" inputmode="numeric" placeholder="{d.min} to {d.max}" value={answerOf(d) === 'unknown' ? '' : answerOf(d)} oninput={(e) => (answers[d.id] = (e.currentTarget as HTMLInputElement).value)} aria-label="The answer" />
@@ -342,6 +342,11 @@
     align-items: center;
     gap: 0.4rem;
     margin: 0.25rem 0 0;
+  }
+  .remind span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
   }
   .as {
     align-items: center;
