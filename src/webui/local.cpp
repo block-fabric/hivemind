@@ -12,6 +12,7 @@
 #include <interfaces/node.h>
 #include <node/context.h>
 #include <tinyformat.h>
+#include <uint256.h>
 #include <util/fs.h>
 #include <util/fs_helpers.h>
 
@@ -128,6 +129,15 @@ void RegisterHost(Bridge& bridge, NodeFn node, guard::ConfirmFn confirm)
         }, Bridge::Thread::LONG);
     }
     (void)confirm;
+}
+
+std::vector<std::string> CoinbaseRoles(interfaces::Chain& chain, const uint256& block)
+{
+    // For example (FastBlocks): {"staked", "bmm"} for a coinbase whose first output is the producer's share
+    // and whose second is the fee pot paid to a BMM bidder.
+    (void)chain;
+    (void)block;
+    return {};
 }
 
 } // namespace webui::local
