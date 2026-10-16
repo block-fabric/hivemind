@@ -38,7 +38,7 @@
 
   try {
     await waitFor('the node to run', () => T() && T().app.phase === 'ready' && T().node.tip, 120000);
-    await check('Advanced on a first start (user decision), Simple once chosen', window.__E2E_FIRST_MODE === 'advanced' \&\& T().prefs.uiMode === 'simple', `${window.__E2E_FIRST_MODE} ${T().prefs.uiMode}`);
+    await check('Advanced on a first start (user decision), Simple once chosen', window.__E2E_FIRST_MODE === 'advanced' && T().prefs.uiMode === 'simple', `${window.__E2E_FIRST_MODE} ${T().prefs.uiMode}`);
     await waitFor('the node to reach the mainchain', async () => (await rpc('getmainchaininfo')).connected, 60000);
     await check('the voting center, decisions, create, votecoin and payouts out of the sidebar', !/Voting center|Decisions|Votecoin|Payouts|Create/.test(text('nav.sidebar .scroll')) && /Questions/.test(text('nav.sidebar .scroll')) && /My bets/.test(text('nav.sidebar .scroll')), text('nav.sidebar .scroll'));
 
