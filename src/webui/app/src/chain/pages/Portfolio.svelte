@@ -12,7 +12,7 @@
   import { wallets, walletsEnabled } from '../../lib/state.svelte';
   import '../hm/hm.css';
   import OutcomeName from '../hm/OutcomeName.svelte';
-  import { formatChance, formatUnits, outcomesOf, pnlOf, titleWithoutCategory } from '../hm/model';
+  import { formatChance, formatUnits, heldByOutcome, outcomesOf, pnlOf, titleWithoutCategory } from '../hm/model';
   import { decisionMap, hm, openTrade as intend, startHivemind, tradesOf } from '../hm/store.svelte';
 
   /** Open the market of a position on a side of its outcome. */
@@ -25,8 +25,9 @@
 
   const noWallet = $derived(!walletsEnabled() || wallets.current === null);
   const decisions = $derived(decisionMap());
+  // One row an outcome of a market: the chain keeps the shares by account, and each purchase goes to a new one.
   const rows = $derived(
-    hm.positions
+    heldByOutcome(hm.positions)
       .map((p) => {
         const m = hm.markets.find((x) => x.id === p.market);
         const price = m?.states[p.state]?.price ?? 0;
@@ -63,16 +64,16 @@
       {:else}
         <div class="hm-wrap">
           <table class="hm-table" use:stacked aria-label="Positions">
-            <thead><tr><th>Market</th><th>Outcome</th><th class="end">Shares</th><th class="end">Chance</th><th class="end">Worth now</th><th class="end">Paid</th><th class="end">Profit or loss</th><th>Stage</th><th><span class="sr-only">Trade</span></th></tr></thead>
+            <thead><tr><th>Market</th><th>Outcome</th><th class="end">Shares</th><th class="end">Average price</th><th class="end">Chance</th><th class="end">Worth now</th><th class="end">Profit or loss</th><th>Stage</th><th><span class="sr-only">Trade</span></th></tr></thead>
             <tbody>
-              {#each rows as r (r.market + r.account + r.state)}
+              {#each rows as r (`${r.market}:${r.state}`)}
                 <tr class="click" onclick={() => openTrade(r.market, r.state, 'buy')} use:selectable={() => openTrade(r.market, r.state, 'buy')}>
                   <td class="cut"><SafeText text={titleWithoutCategory(r.m?.text ?? r.market)} /></td>
                   <td>{#if r.outcome}<OutcomeName outcome={r.outcome} />{/if}</td>
                   <td class="end num">{formatUnits(r.shares)}</td>
+                  <td class="end num" title={r.pnl.basis === null ? undefined : `Paid ${formatUnits(r.pnl.basis, 4)} for the shares held, fee included`}>{r.pnl.avgPrice === null ? '–' : formatUnits(r.pnl.avgPrice, 4)}</td>
                   <td class="end num">{formatChance(r.price)}</td>
                   <td class="end num">{formatUnits(r.pnl.worth, 4)}</td>
-                  <td class="end num">{r.pnl.cost === null ? '–' : formatUnits(r.pnl.cost, 4)}</td>
                   <td class="end num" class:hm-up={(r.pnl.pnl ?? 0) > 0} class:hm-down={(r.pnl.pnl ?? 0) < 0}>{r.pnl.pnl === null ? '–' : `${r.pnl.pnl >= 0 ? '+' : ''}${formatUnits(r.pnl.pnl, 4)}`}{#if r.pnl.cost !== null && !r.pnl.complete}<span class="faint" title="Some of the shares were traded outside this app"> *</span>{/if}</td>
                   <td><span class="hm-stage" class:live={r.m?.status === 'trading'} class:vote={r.m?.status === 'closed'}>{r.m?.status === 'trading' ? 'Trading' : 'Being voted on'}</span></td>
                   <td class="end">{#if r.m?.status === 'trading'}<button type="button" class="btn small ghost" onclick={(e) => { e.stopPropagation(); openTrade(r.market, r.state, 'sell'); }}>Sell…</button>{/if}</td>
@@ -81,7 +82,7 @@
             </tbody>
           </table>
         </div>
-        <p class="hm-help pad">Worth now is what the shares would bring at the chance the market gives their outcome; selling many moves the chance. The profit or loss counts the trades placed in this app; – where it placed none.</p>
+        <p class="hm-help pad">Worth now is what the shares would bring at the chance the market gives their outcome; selling many moves the chance. The average price is what a share bought cost, fee included; the profit or loss counts the trades placed in this app at that average; – where it placed none.</p>
       {/if}
     </section>
 

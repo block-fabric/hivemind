@@ -15,7 +15,7 @@
   import PriceChart from './PriceChart.svelte';
   import TradePanel from './TradePanel.svelte';
   import { barWidth } from './actions';
-  import { categoryOf, commonQuestion, formatChance, formatUnits, marketKind, outcomesOf, periodEnd, pnlOf, scalarEstimate, statePayout, titleWithoutCategory, volume, type Market } from './model';
+  import { categoryOf, commonQuestion, formatChance, formatUnits, heldByOutcome, marketKind, outcomesOf, periodEnd, pnlOf, scalarEstimate, statePayout, titleWithoutCategory, volume, type Market } from './model';
   import { decisionMap, hm, priceSeries, tradesOf, tradeIntent } from './store.svelte';
 
   let { id, back }: { id: string; back: () => void } = $props();
@@ -68,8 +68,9 @@
     return market.states.map((s) => statePayout(outs, s.state));
   });
 
+  // One row an outcome: the chain keeps the shares by account, and each purchase goes to a new one.
   const rows = $derived(
-    held.map((p) => {
+    heldByOutcome(held).map((p) => {
       const price = market?.states[p.state]?.price ?? 0;
       return { ...p, outcome: outcomes.find((o) => o.state === p.state), price, pnl: pnlOf(p.shares, price, tradesOf(wallets.current, id, p.state)) };
     }),
@@ -160,15 +161,15 @@
             <div class="panel-head"><h2>Your positions</h2><button type="button" class="btn ghost small" onclick={() => go('portfolio')}>Portfolio</button></div>
             <div class="hm-wrap">
               <table class="hm-table" use:stacked aria-label="Your positions in this market">
-                <thead><tr><th>Outcome</th><th class="end">Shares</th><th class="end">Chance</th><th class="end">Worth now</th><th class="end">Paid</th><th class="end">Profit or loss</th><th></th></tr></thead>
+                <thead><tr><th>Outcome</th><th class="end">Shares</th><th class="end">Average price</th><th class="end">Chance</th><th class="end">Worth now</th><th class="end">Profit or loss</th><th><span class="sr-only">Trade</span></th></tr></thead>
                 <tbody>
-                  {#each rows as r (r.account + r.state)}
+                  {#each rows as r (r.state)}
                     <tr>
-                      <td>{#if r.outcome}<OutcomeName outcome={r.outcome} />{/if}</td>
+                      <td>{#if r.outcome}<OutcomeName outcome={r.outcome} />{/if}{#if r.accounts.length > 1}<span class="faint small" title="Each purchase goes to a new account of the wallet; a sale is made from one of them"> · in {r.accounts.length} accounts</span>{/if}</td>
                       <td class="end num">{formatUnits(r.shares)}</td>
+                      <td class="end num" title={r.pnl.basis === null ? undefined : `Paid ${formatUnits(r.pnl.basis, 4)} for the shares held, fee included`}>{r.pnl.avgPrice === null ? '–' : formatUnits(r.pnl.avgPrice, 4)}</td>
                       <td class="end num">{formatChance(r.price)}</td>
                       <td class="end num">{formatUnits(r.pnl.worth, 4)}</td>
-                      <td class="end num">{r.pnl.cost === null ? '–' : formatUnits(r.pnl.cost, 4)}</td>
                       <td class="end num" class:hm-up={(r.pnl.pnl ?? 0) > 0} class:hm-down={(r.pnl.pnl ?? 0) < 0}>{r.pnl.pnl === null ? '–' : `${r.pnl.pnl >= 0 ? '+' : ''}${formatUnits(r.pnl.pnl, 4)}`}{#if r.pnl.cost !== null && !r.pnl.complete}<span class="faint" title="Some of the shares were traded outside this app"> *</span>{/if}</td>
                       <td class="end">{#if market.status === 'trading'}<button type="button" class="btn small ghost" onclick={() => { chosen = r.state; side = 'sell'; }}>Sell</button>{/if}</td>
                     </tr>

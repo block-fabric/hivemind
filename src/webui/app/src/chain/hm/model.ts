@@ -526,31 +526,71 @@ export interface Pnl {
   shares: number;
   /** What they bring at the price now. */
   worth: number;
-  /** What was paid for them, of the trades this app recorded; null if it recorded none. */
+  /** What was paid in all, of the trades this app recorded; null if it recorded none. */
   cost: number | null;
+  /** What a share bought cost on average, fee included (the purchases recorded); null without one. */
+  avgPrice: number | null;
+  /** What the shares held cost, at that average; null without it. */
+  basis: number | null;
   /** What sales brought. */
   proceeds: number;
-  /** worth + proceeds - cost; null without a cost. */
+  /**
+   * What the trades made, at the average cost: the sales against what the shares sold cost, and the shares
+   * held at the price now against what they cost (worth + proceeds - cost when the trades explain every
+   * share); null without a purchase recorded.
+   */
   pnl: number | null;
   /** Whether the trades recorded explain every share held (else the cost is that of a part). */
   complete: boolean;
 }
 
-/** The profit and loss of a position: the shares held at the price now, against the trades recorded. */
+/** The profit and loss of a position: the shares held at the price now, against the trades recorded (average cost). */
 export function pnlOf(held: number, price: number, trades: readonly TradeRecord[]): Pnl {
   const bought = trades.filter((x) => x.shares > 0);
   const sold = trades.filter((x) => x.shares < 0);
   const cost = bought.reduce((n, x) => n + x.coins, 0);
+  const boughtShares = bought.reduce((n, x) => n + x.shares, 0);
+  const soldShares = sold.reduce((n, x) => n - x.shares, 0);
   const proceeds = sold.reduce((n, x) => n + x.coins, 0);
-  const net = trades.reduce((n, x) => n + x.shares, 0);
+  const net = boughtShares - soldShares;
   const worth = held * price;
   const recorded = trades.length > 0;
+  const avgPrice = boughtShares > 0 ? cost / boughtShares : null;
+  const basis = avgPrice === null ? null : avgPrice * held;
   return {
     shares: held,
     worth,
     cost: recorded ? cost : null,
+    avgPrice,
+    basis,
     proceeds,
-    pnl: recorded ? worth + proceeds - cost : null,
+    pnl: avgPrice === null ? null : worth - basis! + proceeds - avgPrice * soldShares,
     complete: recorded && Math.abs(net - held) < 1e-8,
   };
+}
+
+/**
+ * The positions of the wallet by market and outcome: the chain keeps them by account, and a purchase goes to
+ * a new account of the wallet each time (buyshares), so one outcome is often held in several. Their shares
+ * add up; the accounts are kept (a sale is made from one of them). In the order the outcomes come first.
+ */
+export interface HeldOutcome {
+  market: string;
+  state: number;
+  shares: number;
+  /** The accounts that hold some, most first. */
+  accounts: { account: string; shares: number }[];
+}
+
+export function heldByOutcome(positions: readonly WalletPosition[]): HeldOutcome[] {
+  const out = new Map<string, HeldOutcome>();
+  for (const p of positions) {
+    const key = `${p.market}:${p.state}`;
+    let h = out.get(key);
+    if (!h) out.set(key, (h = { market: p.market, state: p.state, shares: 0, accounts: [] }));
+    h.shares += p.shares;
+    h.accounts.push({ account: p.account, shares: p.shares });
+  }
+  for (const h of out.values()) h.accounts.sort((a, b) => b.shares - a.shares);
+  return [...out.values()];
 }

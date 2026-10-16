@@ -33,6 +33,9 @@ import {
   outcomesOf,
   parseAnswer,
   pnlOf,
+  heldByOutcome,
+  formatChance,
+  formatUnits,
   previewTrade,
   revealStart,
   periodAt,
@@ -382,6 +385,42 @@ describe('the forms', () => {
     expect(p.complete).toBe(true);
     expect(pnlOf(5, 0.6, [t(3, 1.5)]).complete).toBe(false);
   });
+
+  it('a position of several purchases: one outcome, the shares added up, the average price, sales at that average', () => {
+    // Bought 4, 3 and 8 (each into a new account of the wallet), then sold 5.
+    const t = (shares: number, coins: number) => ({ wallet: 'w', market: 'm', state: 1, shares, coins, time: 0, txid: 'x' });
+    const trades = [t(4, 2), t(3, 1.8), t(8, 4.4), t(-5, 3)];
+    const p = pnlOf(10, 0.6, trades);
+    expect(p.cost).toBeCloseTo(8.2, 12);
+    expect(p.avgPrice).toBeCloseTo(8.2 / 15, 12);
+    expect(p.basis).toBeCloseTo((8.2 / 15) * 10, 12);
+    expect(p.worth).toBeCloseTo(6, 12);
+    // The sale made 3 - 5 × average; the 10 held are worth 6 against 10 × average: 9 - 8.2 in all.
+    expect(p.pnl).toBeCloseTo(9 - 8.2, 12);
+    expect(p.complete).toBe(true);
+    // Shares the app did not buy (traded elsewhere) cost the average too, not nothing.
+    const more = pnlOf(20, 0.6, trades);
+    expect(more.complete).toBe(false);
+    expect(more.basis).toBeCloseTo((8.2 / 15) * 20, 12);
+    expect(more.pnl).toBeCloseTo(12 - (8.2 / 15) * 20 + 3 - (8.2 / 15) * 5, 12);
+    // Only sales recorded: no price paid known.
+    expect(pnlOf(1, 0.6, [t(-1, 0.5)])).toMatchObject({ avgPrice: null, basis: null, pnl: null });
+
+    // The chain keeps the shares by account: one entry an outcome of a market.
+    const held = heldByOutcome([
+      { market: 'm', account: 'a1', state: 1, shares: 4 },
+      { market: 'm', account: 'a2', state: 1, shares: 3 },
+      { market: 'm', account: 'a3', state: 0, shares: 2 },
+      { market: 'm', account: 'a4', state: 1, shares: 8 },
+      { market: 'n', account: 'a1', state: 1, shares: 1 },
+    ]);
+    expect(held.map((h) => [h.market, h.state, h.shares, h.accounts.map((a) => a.account)])).toEqual([
+      ['m', 1, 15, ['a4', 'a1', 'a2']],
+      ['m', 0, 2, ['a3']],
+      ['n', 1, 1, ['a1']],
+    ]);
+    expect(heldByOutcome([])).toEqual([]);
+  });
 });
 
 describe('the journal of the app', () => {
@@ -708,6 +747,39 @@ describe.runIf(CHAIN.name === 'Hivemind')('the pages of Hivemind', () => {
     await waitFor(() => expect(screen.getAllByRole('listitem').filter((li) => li.textContent?.includes('The cup')).length).toBe(1));
   });
 
+  it('Your positions and the Portfolio: one row an outcome, however many purchases (accounts) hold it', async () => {
+    const THIRD = OTHER.slice(0, -6) + 'qqqqqq';
+    const held = [
+      { market: id('a'), account: ME, state: 1, shares: 4 },
+      { market: id('a'), account: OTHER, state: 1, shares: 3 },
+      { market: id('a'), account: THIRD, state: 1, shares: 3 },
+      { market: id('a'), account: THIRD, state: 0, shares: 2 },
+    ];
+    const trade = (shares: number, coins: number, account: string) => ({ wallet: 'w', market: id('a'), state: 1, shares, coins, time: 1_700_000_000, txid: String(shares + 10).repeat(32), account });
+    stores.journal = { trades: [trade(4, 2, ME), trade(3, 1.8, OTHER), trade(8, 4.4, THIRD), trade(-5, 3, THIRD)] };
+    setTransport(async (r) => (r.method === 'getwalletpositions' ? (calls.push(r), held) : fakeNode(r)));
+    go('markets', `m-${id('a')}`);
+    const view = render(Markets);
+    await loaded();
+    const table = await waitFor(() => screen.getByRole('table', { name: 'Your positions in this market' }));
+    await waitFor(() => expect(within(table).getAllByRole('row').length).toBe(3));
+    const [, yes, no] = within(table).getAllByRole('row');
+    const price = markets[0].states[1].price!;
+    const p = pnlOf(10, price, hm.journal.trades);
+    const cells = (row: HTMLElement) => within(row).getAllByRole('cell').map((c) => c.textContent?.trim());
+    expect(cells(yes).slice(0, 6)).toEqual([expect.stringMatching(/^Yes.*in 3 accounts$/), formatUnits(10), formatUnits(8.2 / 15, 4), formatChance(price), formatUnits(p.worth, 4), `${p.pnl! >= 0 ? '+' : ''}${formatUnits(p.pnl!, 4)}`]);
+    expect(within(yes).getByRole('button', { name: 'Sell' })).toBeTruthy();
+    // No: bought elsewhere, no price paid known.
+    expect(cells(no).slice(1, 3)).toEqual([formatUnits(2), '–']);
+    view.unmount();
+
+    render(Portfolio);
+    const rows = await waitFor(() => within(screen.getByRole('table', { name: 'Positions' })).getAllByRole('row'));
+    expect(rows.length).toBe(3);
+    expect(cells(rows[1])[2]).toBe(formatUnits(10));
+    expect(screen.getByText('Positions', { selector: 'span' }).parentElement!.querySelector('strong')!.textContent).toBe('2');
+  });
+
   it('#8: Portfolio sells from a row (Sell… opens the market on the Sell side), and its rows take the keyboard', async () => {
     render(Portfolio);
     await loaded();
@@ -715,7 +787,8 @@ describe.runIf(CHAIN.name === 'Hivemind')('the pages of Hivemind', () => {
     const row = within(table).getAllByRole('row')[1] as HTMLTableRowElement;
     expect(row.tabIndex).toBe(0);
     // In a narrow panel each cell carries the words of its column.
-    expect((within(row).getAllByRole('cell')[4] as HTMLElement).dataset.label).toBe('Worth now');
+    // (Market, Outcome, Shares, Average price, Chance, Worth now, …)
+    expect((within(row).getAllByRole('cell')[5] as HTMLElement).dataset.label).toBe('Worth now');
     await fireEvent.click(within(row).getByRole('button', { name: 'Sell…' }));
     expect(nav.tab).toBe(`m-${id('a')}`);
     const { tradeIntent } = await import('./hm/store.svelte');

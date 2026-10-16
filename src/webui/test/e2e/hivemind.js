@@ -133,6 +133,21 @@
     await waitFor('the chance of Yes up', async () => (await rpc('getmarket', [market.id])).states[1].price > 0.5, 30000);
     await sleep(1500);
     await shot('hm-market-after-buy');
+    // A second purchase of Yes goes to a new account of the wallet (buyshares): Your positions keeps one row
+    // for Yes, the shares of both added up.
+    set($('#trade-amount'), '0.3');
+    await waitFor('the quote of the second purchase', () => text('section[aria-label="Trade"]').includes('Quoted by the node just now.'), 20000);
+    $('#trade-place').click();
+    await answerDialog('Buy shares', 'Buy');
+    const yesHeld = async () => (await rpc('getwalletpositions', [], 'hm')).filter((p) => p.market === market.id && p.state === 1);
+    const both = await waitFor('the second purchase held', async () => ((await yesHeld()).length >= 2 ? await yesHeld() : null), 60000);
+    const total = both.reduce((n, p) => n + p.shares, 0);
+    const yesRows = () => $$('table[aria-label="Your positions in this market"] tbody tr');
+    await waitFor('one row for Yes', () => yesRows().length === 1 && yesRows()[0].textContent.includes(`in ${both.length} accounts`), 30000);
+    const shown = Number(yesRows()[0].querySelectorAll('td')[1].textContent.replace(/[^\d.]/g, ''));
+    await check('Your positions: one row for Yes, the shares of both purchases added up, an average price', yesRows().length === 1 && Math.abs(shown - total) < 1e-6 && /\d/.test(yesRows()[0].querySelectorAll('td')[2].textContent), JSON.stringify({ both, shown, row: yesRows()[0].textContent }));
+    await sleep(800);
+    await shot('hm-market-positions');
     const toSell = (Math.floor(position.shares * 0.25 * 1e8) / 1e8).toFixed(8);
     $$('section[aria-label="Trade"] [role="tab"]').find((b) => b.textContent.trim() === 'Sell').click();
     await sleep(200);
@@ -140,10 +155,7 @@
     await waitFor('the quote of the sale', () => text('section[aria-label="Trade"]').includes('Quoted by the node just now.'), 20000);
     $('#trade-place').click();
     await answerDialog('Sell shares', 'Sell');
-    await waitFor('the shares sold', async () => {
-      const p = (await rpc('getwalletpositions', [], 'hm')).find((x) => x.market === market.id && x.state === 1);
-      return p && p.shares < position.shares;
-    }, 60000);
+    await waitFor('the shares sold', async () => (await yesHeld()).reduce((n, p) => n + p.shares, 0) < total - 1e-9, 60000);
     await check('sold part of the shares', true);
     await go('portfolio');
     await sleep(1200);

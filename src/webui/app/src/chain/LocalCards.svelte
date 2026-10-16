@@ -9,14 +9,14 @@
   import { wallets } from '../lib/state.svelte';
   import './hm/hm.css';
   import Countdown from './hm/Countdown.svelte';
-  import { formatChance, formatUnits, leader, periodEnd, pnlOf, revealStart, titleWithoutCategory, voteStage } from './hm/model';
+  import { formatChance, formatUnits, heldByOutcome, leader, periodEnd, pnlOf, revealStart, titleWithoutCategory, voteStage } from './hm/model';
   import { hm, startHivemind, tradesOf } from './hm/store.svelte';
 
   $effect(() => startHivemind());
 
   const info = $derived(hm.info);
   const positions = $derived(
-    hm.positions.map((p) => {
+    heldByOutcome(hm.positions).map((p) => {
       const m = hm.markets.find((x) => x.id === p.market);
       const price = m?.states[p.state]?.price ?? 0;
       return { p, m, pnl: pnlOf(p.shares, price, tradesOf(wallets.current, p.market, p.state)) };
