@@ -14,6 +14,8 @@
   import OutcomeName from '../hm/OutcomeName.svelte';
   import { formatChance, formatUnits, heldByOutcome, outcomesOf, pnlOf, titleWithoutCategory } from '../hm/model';
   import { decisionMap, hm, openTrade as intend, startHivemind, tradesOf } from '../hm/store.svelte';
+  import SimpleBets from './SimpleBets.svelte';
+  import { simpleMode } from '../../lib/uimode.svelte';
 
   /** Open the market of a position on a side of its outcome. */
   function openTrade(market: string, state: number, side: 'buy' | 'sell') {
@@ -44,6 +46,10 @@
   const marketText = (id: string) => hm.markets.find((m) => m.id === id)?.text ?? '';
 </script>
 
+<!-- Simple mode (lib/uimode.svelte.ts): My bets, in plain words (SimpleBets). -->
+{#if simpleMode()}
+<SimpleBets />
+{:else}
 <div class="page portfolio">
   <header class="page-head"><h1>Portfolio</h1></header>
 
@@ -115,6 +121,7 @@
     </section>
   {/if}
 </div>
+{/if}
 
 <style>
   .portfolio {

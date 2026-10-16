@@ -881,3 +881,126 @@ describe.runIf(CHAIN.name === 'Hivemind')('the pages of Hivemind', () => {
     expect(screen.getByText('Rain in Paris')).toBeTruthy();
   });
 });
+
+// Simple mode (lib/uimode.svelte.ts, user decision 2026-10-16): the questions as cards, one opened with Yes and
+// No, an amount and what comes of it; the bets of the wallet with "Cash out now". The trades are placed as the
+// trade panel of Advanced places them: quotetrade, then buyshares with the most it pays (1 % of slippage), or
+// sellshares with the least it takes.
+describe('Simple mode', () => {
+  beforeEach(() => {
+    prefs.uiMode = 'simple';
+  });
+
+  it('leaves votecoin, the decisions, the voting center, creating and the payouts to Advanced', async () => {
+    const { pageShown } = await import('../lib/uimode.svelte');
+    for (const p of ['voting', 'decisions', 'create', 'votecoin', 'payouts']) expect(pageShown(p as never), p).toBe(false);
+    for (const p of ['markets', 'portfolio']) expect(pageShown(p as never), p).toBe(true);
+    expect(HOME_QUICK_ACTIONS.filter((q) => pageShown(q.page)).map((q) => q.label)).not.toContain('Vote');
+    prefs.uiMode = 'advanced';
+    expect(pageShown('voting' as never)).toBe(true);
+  });
+
+  it('Questions: open questions as cards, the question in words, the chance as a bar, the others on demand', async () => {
+    go('markets');
+    render(Markets);
+    await loaded();
+    const cards = await waitFor(() => screen.getByRole('list', { name: 'Questions' }));
+    // The question of the decision, not the title of the market; Yes with its chance; the options of several.
+    expect(within(cards).getByText('Will it rain in Paris on 1 May?')).toBeTruthy();
+    expect(within(cards).getByText(`${Math.round(markets[0].states[1].price! * 100)}%`)).toBeTruthy();
+    expect(within(cards).getByText('Who wins the cup?')).toBeTruthy();
+    expect(within(cards).getAllByText(/Brazil|France/).length).toBe(2);
+    expect(within(cards).queryByText('Did the bridge open?')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Create a market/ })).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: /^Being decided or answered/ }));
+    await waitFor(() => expect(within(screen.getByRole('list', { name: 'Questions' })).getByText('Did the bridge open?')).toBeTruthy());
+  });
+
+  it('a question: Yes or No, an amount, the outcome in words, and the bet placed as Advanced places it', async () => {
+    go('markets', `m-${id('a')}`);
+    render(Markets);
+    render(DialogHost);
+    await loaded();
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Will it rain in Paris on 1 May?' })).toBeTruthy());
+    const radios = screen.getAllByRole('radio');
+    expect(radios.map((r) => r.textContent?.trim())).toEqual(['Yes', 'No']);
+    await fireEvent.click(screen.getByRole('radio', { name: 'Yes' }));
+    await fireEvent.input(document.getElementById('bet-amount')!, { target: { value: '0.5' } });
+    const shares = sharesForBudget(markets[0], 1, 0.5);
+    await waitFor(() => expect(screen.getByTestId('bet-outcome').textContent).toMatch(/If “Yes” happens you get ≈ [\d.]+ CHN; if not, you lose 0\.5 CHN\./));
+    expect(screen.getByTestId('bet-outcome').textContent).toContain(`${shares.toFixed(4).replace(/\.?0+$/, '')} CHN`);
+    await fireEvent.click(document.getElementById('bet-place')!);
+    await answer('yes');
+    await waitFor(() => expect(called('buyshares').length).toBe(1));
+    const quote = called('quotetrade').at(-1)!;
+    expect(quote.params).toEqual([id('a'), 1, shares.toFixed(8)]);
+    const quoted = previewTrade(markets[0], 1, shares)!.cost + previewTrade(markets[0], 1, shares)!.fee;
+    expect(called('buyshares')[0].params).toEqual([id('a'), 1, shares.toFixed(8), maxCost(quoted, 0.01).toFixed(8)]);
+    expect(called('buyshares')[0].wallet).toBe('w');
+    expect(hm.journal.trades).toMatchObject([{ wallet: 'w', market: id('a'), state: 1 }]);
+  });
+
+  it('a question: cash out the bet held, sold as Advanced sells it', async () => {
+    go('markets', `m-${id('a')}`);
+    render(Markets);
+    render(DialogHost);
+    await loaded();
+    const mine = await waitFor(() => screen.getByRole('region', { name: 'Your bets on this question' }));
+    expect(within(mine).getByText(/pays 2 CHN if right/)).toBeTruthy();
+    await fireEvent.click(within(mine).getByRole('button', { name: /^Cash out now for ≈ [\d.]+ CHN$/ }));
+    await answer('yes');
+    await waitFor(() => expect(called('sellshares').length).toBe(1));
+    expect(called('quotetrade').at(-1)!.params).toEqual([id('a'), 1, '-2.00000000']);
+    expect(called('sellshares')[0].params).toEqual([id('a'), 1, '2.00000000', ME, expect.stringMatching(/^\d+\.\d{8}$/)]);
+  });
+
+  it('a question with several answers: one button an option; a closed one takes no bet', async () => {
+    go('markets', `m-${id('b')}`);
+    render(Markets);
+    await loaded();
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Who wins the cup?' })).toBeTruthy());
+    expect(screen.getAllByRole('radio').map((r) => r.textContent?.trim()).sort()).toEqual(['Brazil', 'France']);
+  });
+
+  it('a question being decided takes no bet, and says so', async () => {
+    markets[0] = { ...markets[0], status: 'closed' };
+    go('markets', `m-${id('a')}`);
+    render(Markets);
+    await loaded();
+    await waitFor(() => expect(screen.getByText(/Bets are closed/)).toBeTruthy());
+    expect(screen.queryByRole('radio')).toBeNull();
+    expect(document.getElementById('bet-place')).toBeNull();
+    // Nor a cash-out: the bet pays once the answer is decided.
+    expect(screen.queryByRole('button', { name: /Cash out/ })).toBeNull();
+  });
+
+  it('My bets: each bet in words, worth now, cash out; Advanced keeps the Portfolio', async () => {
+    const view = render(Portfolio);
+    render(DialogHost);
+    await loaded();
+    const list = await waitFor(() => screen.getByRole('list', { name: 'My bets' }));
+    expect(within(list).getByText('Will it rain in Paris on 1 May?')).toBeTruthy();
+    expect(within(list).getByText('Yes')).toBeTruthy();
+    expect(within(list).getByText('2 CHN')).toBeTruthy();
+    await fireEvent.click(within(list).getByRole('button', { name: /^Cash out now/ }));
+    await answer('yes');
+    await waitFor(() => expect(called('sellshares')[0]?.params).toEqual([id('a'), 1, '2.00000000', ME, expect.any(String)]));
+    view.unmount();
+    prefs.uiMode = 'advanced';
+    render(Portfolio);
+    await waitFor(() => expect(screen.getByRole('table', { name: 'Positions' })).toBeTruthy());
+  });
+
+  it('the cards of the home: my bets and the questions closing soon, no votes nor votecoin', async () => {
+    render(LocalCards);
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'My bets' })).toBeTruthy());
+    expect(screen.getByRole('heading', { name: 'Closing soon' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Votes due' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Votecoin' })).toBeNull();
+  });
+
+  it('the first steps of Hivemind: Drivechains, the questions, my bets', async () => {
+    const { FIRST_STEPS } = await import('./firststeps');
+    expect(FIRST_STEPS.map((s) => s.action?.page)).toEqual(['peg', 'markets', 'portfolio']);
+  });
+});

@@ -11,6 +11,11 @@
   import Countdown from './hm/Countdown.svelte';
   import { formatChance, formatUnits, heldByOutcome, leader, periodEnd, pnlOf, revealStart, titleWithoutCategory, voteStage } from './hm/model';
   import { hm, startHivemind, tradesOf } from './hm/store.svelte';
+  import { simpleMode } from '../lib/uimode.svelte';
+
+  // Simple mode (lib/uimode.svelte.ts): my bets and the questions closing soon, in plain words; the votes and
+  // votecoin are Advanced's.
+  const simple = $derived(simpleMode());
 
   $effect(() => startHivemind());
 
@@ -50,16 +55,23 @@
 
 {#if hm.loaded && !hm.error}
   <div class="hm-cards">
-    <Card title="My positions" icon="portfolio" open={() => go('portfolio')} openLabel="Open the portfolio" stat>
+    <Card title={simple ? 'My bets' : 'My positions'} icon="portfolio" open={() => go('portfolio')} openLabel="Open the portfolio" stat>
       <span class="value num">{formatUnits(worth, 4)}</span>
+      {#if simple}
+        <dl class="pairs">
+          <dt>Bets</dt><dd class="num">{positions.length}</dd>
+          <dt>Waiting for an answer</dt><dd class="num">{positions.filter((x) => x.m?.status === 'closed').length}</dd>
+        </dl>
+      {:else}
       <dl class="pairs">
         <dt>Positions</dt><dd class="num">{positions.length}</dd>
         <dt>Profit or loss</dt><dd class="num" class:hm-up={pnl > 0} class:hm-down={pnl < 0}>{costed.length ? `${pnl >= 0 ? '+' : ''}${formatUnits(pnl, 4)}` : '–'}</dd>
         <dt>Waiting for a vote</dt><dd class="num">{positions.filter((x) => x.m?.status === 'closed').length}</dd>
       </dl>
+      {/if}
       {#snippet actions()}
-        <button type="button" class="btn grow" onclick={() => go('markets')}><Icon name="market" size={15} /> Trade</button>
-        <button type="button" class="btn ghost" onclick={() => go('payouts')}>Payouts</button>
+        <button type="button" class="btn grow" onclick={() => go('markets')}><Icon name="market" size={15} /> {simple ? 'Bet' : 'Trade'}</button>
+        {#if !simple}<button type="button" class="btn ghost" onclick={() => go('payouts')}>Payouts</button>{/if}
       {/snippet}
     </Card>
 
@@ -78,10 +90,15 @@
         </ul>
       {/if}
       {#snippet actions()}
-        <button type="button" class="btn grow" onclick={() => go('create', 'market')}><Icon name="create" size={15} /> Create a market</button>
+        {#if simple}
+          <button type="button" class="btn grow" onclick={() => go('markets')}><Icon name="market" size={15} /> See the questions</button>
+        {:else}
+          <button type="button" class="btn grow" onclick={() => go('create', 'market')}><Icon name="create" size={15} /> Create a market</button>
+        {/if}
       {/snippet}
     </Card>
 
+    {#if !simple}
     <Card title="Votes due" icon="ballot" open={() => go('voting')} openLabel="Open the voting center" stat>
       <span class="value num" class:hm-down={due.reveal.length > 0}>{due.reveal.length + due.seal.length}</span>
       <dl class="pairs">
@@ -106,6 +123,7 @@
         <button type="button" class="btn ghost" onclick={() => go('decisions', 'calendar')}>Calendar</button>
       {/snippet}
     </Card>
+    {/if}
   </div>
 {/if}
 

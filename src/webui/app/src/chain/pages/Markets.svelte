@@ -14,6 +14,9 @@
   import PriceChart from '../hm/PriceChart.svelte';
   import { categoryOf, formatChance, formatUnits, marketKind, outcomesOf, periodEnd, titleWithoutCategory, volume, type Market, type MarketKind } from '../hm/model';
   import { decisionMap, hm, priceSeries, startHivemind, ownItems } from '../hm/store.svelte';
+  import SimpleMarket from '../hm/SimpleMarket.svelte';
+  import SimpleMarkets from './SimpleMarkets.svelte';
+  import { simpleMode } from '../../lib/uimode.svelte';
 
   $effect(() => startHivemind());
 
@@ -69,8 +72,13 @@
   const worth = $derived(hm.positions.reduce((n, p) => n + p.shares * (hm.markets.find((m) => m.id === p.market)?.states[p.state]?.price ?? 0), 0));
 </script>
 
-{#if openId}
+<!-- Simple mode (lib/uimode.svelte.ts): the questions as cards, one opened with Yes and No (SimpleMarkets, SimpleMarket). -->
+{#if openId && simpleMode()}
+  {#key openId}<SimpleMarket id={openId} back={() => go('markets')} />{/key}
+{:else if openId}
   {#key openId}<MarketView id={openId} back={() => go('markets')} />{/key}
+{:else if simpleMode()}
+  <SimpleMarkets {open} />
 {:else}
   <div class="page markets">
     <header class="page-head head">
