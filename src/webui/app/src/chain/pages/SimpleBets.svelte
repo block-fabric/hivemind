@@ -72,7 +72,7 @@
     <ul class="bets" aria-label="My bets">
       {#each rows as r (`${r.market}:${r.state}`)}
         <li class="panel bet">
-          <button type="button" class="link q" onclick={() => go('markets', `m-${r.market}`)}><SafeText text={question(r.m, r.market)} /></button>
+          <button type="button" class="q" onclick={() => go('markets', `m-${r.market}`)}><SafeText text={question(r.m, r.market)} /></button>
           <span class="answer">Your answer: <strong>{name(r.outcome)}</strong></span>
           <dl>
             <dt>Pays if right</dt><dd class="num">{coins(r.shares)}</dd>
@@ -131,9 +131,20 @@
     padding: 1rem 1.1rem;
   }
   .q {
-    font-size: 1.05rem;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 1.08rem;
     font-weight: 650;
+    line-height: 1.3;
     text-align: left;
+    cursor: pointer;
+  }
+  .q:hover {
+    color: var(--link);
+    text-decoration: underline;
   }
   dl {
     display: grid;

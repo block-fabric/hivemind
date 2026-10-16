@@ -92,6 +92,10 @@
                   <span class="num pct">{Math.round(p * 100)}%</span>
                 </span>
               {/each}
+              {#if k === 'categorical'}
+                {@const other = outcomesOf(m, decisions).filter((o) => !o.exclusive).reduce((n, o) => n + (m.states[o.state]?.price ?? 0), 0)}
+                {#if other >= 0.005}<span class="faint small">{t('None of them, or several: %1%', String(Math.round(other * 100)))}</span>{/if}
+              {/if}
             {/if}
             <span class="foot faint small">
               {#if m.status === 'trading'}

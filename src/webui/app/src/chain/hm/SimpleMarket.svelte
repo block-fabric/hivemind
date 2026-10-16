@@ -46,6 +46,8 @@
     if (kind === 'categorical') return commonQuestion(about.map((d) => d.text)) || titleWithoutCategory(market.text);
     return about[0]?.text ?? titleWithoutCategory(market.text);
   });
+  /** A question with several answers: the chance of the other combinations (none of them, or more than one). */
+  const other = $derived(market && kind === 'categorical' ? outcomesOf(market, decisions).filter((o) => !o.exclusive).reduce((n, o) => n + (market.states[o.state]?.price ?? 0), 0) : 0);
   const options = $derived(kind === 'categorical' ? optionTexts(about.map((d) => d.text)) : []);
   const scale = $derived(kind === 'scalar' && about[0] ? { min: about[0].min ?? 0, max: about[0].max ?? 1 } : null);
 
@@ -119,6 +121,13 @@
           <strong class="num">{Math.round(p * 100)}%</strong>
         </div>
       {/each}
+      {#if other >= 0.005}
+        <div class="chance hm-c4">
+          <span class="name muted">None of them, or several</span>
+          <span class="hm-bar"><span use:barWidth={other}></span></span>
+          <strong class="num muted">{Math.round(other * 100)}%</strong>
+        </div>
+      {/if}
       <p class="faint small">The chance is what the bets placed so far say. {#if scale}On a scale from {scale.min} to {scale.max}: Higher wins more the higher the answer.{/if}</p>
     </section>
 

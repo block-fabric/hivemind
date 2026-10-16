@@ -12,6 +12,7 @@
   import { formatChance, formatUnits, heldByOutcome, leader, periodEnd, pnlOf, revealStart, titleWithoutCategory, voteStage } from './hm/model';
   import { hm, startHivemind, tradesOf } from './hm/store.svelte';
   import { simpleMode } from '../lib/uimode.svelte';
+  import { coins } from './hm/simpletrade';
 
   // Simple mode (lib/uimode.svelte.ts): my bets and the questions closing soon, in plain words; the votes and
   // votecoin are Advanced's.
@@ -56,7 +57,7 @@
 {#if hm.loaded && !hm.error}
   <div class="hm-cards">
     <Card title={simple ? 'My bets' : 'My positions'} icon="portfolio" open={() => go('portfolio')} openLabel="Open the portfolio" stat>
-      <span class="value num">{formatUnits(worth, 4)}</span>
+      <span class="value num">{simple ? coins(worth) : formatUnits(worth, 4)}</span>
       {#if simple}
         <dl class="pairs">
           <dt>Bets</dt><dd class="num">{positions.length}</dd>
