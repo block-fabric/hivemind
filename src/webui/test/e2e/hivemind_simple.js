@@ -40,7 +40,7 @@
     await waitFor('the node to run', () => T() && T().app.phase === 'ready' && T().node.tip, 120000);
     await check('Simple mode by default', T().prefs.uiMode === 'simple', T().prefs.uiMode);
     await waitFor('the node to reach the mainchain', async () => (await rpc('getmainchaininfo')).connected, 60000);
-    await check('the voting center, decisions, create, votecoin and payouts out of the sidebar', !/Voting center|Decisions|Votecoin|Payouts|Create/.test(text('nav.sidebar .scroll')) && /Markets/.test(text('nav.sidebar .scroll')), text('nav.sidebar .scroll'));
+    await check('the voting center, decisions, create, votecoin and payouts out of the sidebar', !/Voting center|Decisions|Votecoin|Payouts|Create/.test(text('nav.sidebar .scroll')) && /Questions/.test(text('nav.sidebar .scroll')) && /My bets/.test(text('nav.sidebar .scroll')), text('nav.sidebar .scroll'));
 
     // Coins.
     await rpc('createwallet', ['hm']);
