@@ -64,7 +64,7 @@
       {:else}
         <div class="hm-wrap">
           <table class="hm-table" use:stacked aria-label="Positions">
-            <thead><tr><th>Market</th><th>Outcome</th><th class="end">Shares</th><th class="end">Average price</th><th class="end">Chance</th><th class="end">Worth now</th><th class="end">Profit or loss</th><th>Stage</th><th><span class="sr-only">Trade</span></th></tr></thead>
+            <thead><tr><th>Market</th><th>Outcome</th><th class="end">Shares</th><th class="end" title="What a share bought cost on average, fee included">Avg. price</th><th class="end">Chance</th><th class="end">Worth now</th><th class="end">Profit or loss</th><th>Stage</th><th><span class="sr-only">Trade</span></th></tr></thead>
             <tbody>
               {#each rows as r (`${r.market}:${r.state}`)}
                 <tr class="click" onclick={() => openTrade(r.market, r.state, 'buy')} use:selectable={() => openTrade(r.market, r.state, 'buy')}>

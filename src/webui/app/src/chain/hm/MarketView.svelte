@@ -161,7 +161,7 @@
             <div class="panel-head"><h2>Your positions</h2><button type="button" class="btn ghost small" onclick={() => go('portfolio')}>Portfolio</button></div>
             <div class="hm-wrap">
               <table class="hm-table" use:stacked aria-label="Your positions in this market">
-                <thead><tr><th>Outcome</th><th class="end">Shares</th><th class="end">Average price</th><th class="end">Chance</th><th class="end">Worth now</th><th class="end">Profit or loss</th><th><span class="sr-only">Trade</span></th></tr></thead>
+                <thead><tr><th>Outcome</th><th class="end">Shares</th><th class="end" title="What a share bought cost on average, fee included">Avg. price</th><th class="end">Chance</th><th class="end">Worth now</th><th class="end">Profit or loss</th><th><span class="sr-only">Trade</span></th></tr></thead>
                 <tbody>
                   {#each rows as r (r.state)}
                     <tr>

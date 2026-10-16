@@ -87,7 +87,8 @@
     await sleep(1200);
     await shot('hm-markets-empty');
 
-    // --- Create: a decision whose answer is known in the next period, and a market on it ---
+    // --- Create: a decision whose answer is known in two periods (trading time for two purchases and a
+    // sale, each mined), and a market on it ---
     // From the start of a period: the decision, then the market, are mined while it lasts.
     await until('the start of a period', () => clock().left > PERIOD - 12, PERIOD * 2000);
     const before = (await rpc('gethivemindinfo')).period;
@@ -99,7 +100,7 @@
     await sleep(200);
     $('#create-next').click();
     await sleep(200);
-    set($('#create-event'), '1');
+    set($('#create-event'), '2');
     set($('#create-votes'), '1');
     await sleep(300);
     await shot('hm-create-timing');
@@ -116,7 +117,7 @@
     await waitFor('the decision listed', async () => (await rpc('listdecisions')).length === 1, 60000);
     const market = await waitFor('the market opened', async () => (await rpc('listmarkets'))[0], 90000);
     const decision = (await rpc('listdecisions'))[0];
-    await check('the wizard listed the decision, then opened the market on it', market.decisions[0] === decision.id && market.text === '[Technology] Will the end-to-end test pass?' && decision.eventperiod === before + 1, JSON.stringify({ market, decision }));
+    await check('the wizard listed the decision, then opened the market on it', market.decisions[0] === decision.id && market.text === '[Technology] Will the end-to-end test pass?' && decision.eventperiod === before + 2, JSON.stringify({ market, decision }));
     await shot('hm-create-done');
 
     // --- Trade: buy Yes, then sell part of it ---
@@ -146,6 +147,11 @@
     await waitFor('one row for Yes', () => yesRows().length === 1 && yesRows()[0].textContent.includes(`in ${both.length} accounts`), 30000);
     const shown = Number(yesRows()[0].querySelectorAll('td')[1].textContent.replace(/[^\d.]/g, ''));
     await check('Your positions: one row for Yes, the shares of both purchases added up, an average price', yesRows().length === 1 && Math.abs(shown - total) < 1e-6 && /\d/.test(yesRows()[0].querySelectorAll('td')[2].textContent), JSON.stringify({ both, shown, row: yesRows()[0].textContent }));
+    // The panel in sight for the picture: the page's own scroller moved, not the window's (the title bar stays).
+    const panel = yesRows()[0].closest('section');
+    let scroller = panel.parentElement;
+    while (scroller && !(scroller.scrollHeight > scroller.clientHeight && /auto|scroll/.test(getComputedStyle(scroller).overflowY))) scroller = scroller.parentElement;
+    if (scroller) scroller.scrollTop += panel.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 120;
     await sleep(800);
     await shot('hm-market-positions');
     const toSell = (Math.floor(position.shares * 0.25 * 1e8) / 1e8).toFixed(8);
