@@ -4,6 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <kernel/chainparams.h>
+#include <kernel/testnet_activation.h>
 
 #include <arith_uint256.h>
 
@@ -346,7 +347,7 @@ public:
         };
 
         // Hivemind on the Chains testnet, in slot 9.
-        MakeSidechain({.slot = 9, .genesis_message = "Hivemind testnet", .genesis_time = 1791513292,
+        MakeSidechain({.slot = 9, .genesis_message = "Hivemind testnet 17/Oct/2026: a fresh start", .genesis_time = 1792210200,
                        .message_start = {0x68, 0x76, 0x6d, 0x02}, .default_port = 19855, .bech32_hrp = "thm"});
         // The mainchain of the test network votes on a withdrawal bundle within 600 blocks.
         consensus.sidechain.bundle_retry_delay = 20;
@@ -356,7 +357,7 @@ public:
         consensus.sidechain.hivemind.period_seconds = 60 * 60;
         consensus.sidechain.hivemind.genesis_account = *uint160::FromHex("b8d111d9b7f7e29ec30b67f26c5922afa5b2d744");
         // The height of the mainchain block that activated the slot; nothing is left out at 0.
-        consensus.sidechain.main_activation_height = 3433; // the block that activated the slot on the restarted test network
+        consensus.sidechain.main_activation_height = TESTNET_MAIN_ACTIVATION_HEIGHT; // set once slot 9 activates on the reset test network (kernel/testnet_activation.h)
         // A tenth of the testnet mainchain's withdrawal_min_score (300); proposals within an hour.
         consensus.sidechain.pending_min_score = 30;
         consensus.sidechain.unproposed_expiry_blocks = 60;
