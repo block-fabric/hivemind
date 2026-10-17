@@ -90,27 +90,37 @@ std::map<std::string, Bridge::Thread> RpcMethods()
         // What the wallet holds.
         {"getwalletreputation", Bridge::Thread::WORKER},
         {"getwalletpositions", Bridge::Thread::WORKER},
-        // What the wallet does: transactions it signs (the keys, below).
-        {"createdecision", Bridge::Thread::WORKER},
-        {"createmarket", Bridge::Thread::WORKER},
-        {"buyshares", Bridge::Thread::WORKER},
-        {"sellshares", Bridge::Thread::WORKER},
-        {"transfervotecoin", Bridge::Thread::WORKER},
-        {"sealvote", Bridge::Thread::WORKER},
-        {"revealvote", Bridge::Thread::WORKER},
-        {"sealballot", Bridge::Thread::WORKER},
-        {"revealballot", Bridge::Thread::WORKER},
+        // What the wallet does, transactions it signs: confirmed on the desktop (ConfirmedRpcMethods, below).
     };
 }
 
 std::set<std::string> KeyedRpcMethods()
 {
-    // Each signs a transaction, and those of a market or a vote sign a message with an account's key too.
-    return {"createdecision", "createmarket", "buyshares", "sellshares", "transfervotecoin", "sealvote", "revealvote", "sealballot", "revealballot"};
+    // None: what signs is confirmed on the desktop (ConfirmedRpcMethods).
+    return {};
 }
 
-void RegisterHost(Bridge& bridge, NodeFn node, guard::ConfirmFn confirm)
+std::map<std::string, confirm::Method> ConfirmedRpcMethods()
 {
+    // What the pages do that pays or signs: never the page's to call by itself. The host shows each call on the desktop, its
+    // destinations whole first, then its amounts, then the rest of its parameters, with the passphrase of a locked wallet
+    // typed there, and runs it with the keys unlocked for it alone (confirm.h, audit 7 #1).
+    return {
+        {"createdecision", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Create a decision", "Create", "The wallet pays for a new decision of Hivemind, which reporters vote on."), /*fee_unknown=*/true}},
+        {"createmarket", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Create a market", "Create", "The wallet funds a new market with its liquidity, and pays its fee.", {}, {"liquidity"}), /*fee_unknown=*/true}},
+        {"buyshares", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Buy shares", "Buy", "The wallet pays for shares of an outcome of a market, at most the cost shown.", {}, {"shares", "maxcost"}), /*fee_unknown=*/true}},
+        {"sellshares", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Sell shares", "Sell", "The wallet sells shares of an outcome of a market, for at least the proceeds shown.", {"account"}, {"shares", "minproceeds"}), /*fee_unknown=*/true}},
+        {"transfervotecoin", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Send votecoin", "Send", "The wallet sends votecoin (reputation) of one of its accounts to another.", {"to"}, {"amount"}), /*fee_unknown=*/true}},
+        {"sealvote", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Seal a vote", "Seal", "The wallet signs and publishes the sealed vote of an account on a decision."), /*fee_unknown=*/true}},
+        {"revealvote", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Reveal a vote", "Reveal", "The wallet signs and publishes the vote of an account on a decision."), /*fee_unknown=*/true}},
+        {"sealballot", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Seal a ballot", "Seal", "The wallet signs and publishes the sealed ballot of an account."), /*fee_unknown=*/true}},
+        {"revealballot", {confirm::Method::Kind::SPEND, Bridge::Thread::LONG, confirm::Generic("Reveal a ballot", "Reveal", "The wallet signs and publishes the ballot of an account."), /*fee_unknown=*/true}},
+    };
+}
+
+void RegisterHost(Bridge& bridge, NodeFn node, guard::ConfirmFn confirm, confirm::KeysFn keys)
+{
+    (void)keys;
     // The answers of the votes this app sealed (the wallet needs the answer again to reveal it), and the rest of
     // the journal of the app (trades, prices, votes revealed, reminders): each in a file of its own in the data
     // directory, with no cap but a sanity one (audit port-1 #1: in the preferences of the app, capped at 256 kB,

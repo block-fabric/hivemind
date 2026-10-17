@@ -121,7 +121,17 @@ let stores: { seals: unknown; journal: unknown } = { seals: null, journal: null 
 let sealsFail = false;
 let ballotOnChain: { decisions: string[] } | null = null;
 
+// What pays or signs goes through the host (rpc.confirmed, local.cpp ConfirmedRpcMethods), which asks on the desktop and runs
+// the call: here, at once, as the node would.
+const CONFIRMED = ['createdecision', 'createmarket', 'buyshares', 'sellshares', 'transfervotecoin', 'sealvote', 'revealvote', 'sealballot', 'revealballot'];
+
 async function fakeNode(r: BridgeRequest): Promise<unknown> {
+  if (r.method === 'rpc.confirmedMethods') return { confirmed: CONFIRMED, keyed: [] };
+  if (r.method === 'rpc.confirmed') {
+    const c = r.params as { method: string; params: unknown[]; wallet?: string };
+    expect(CONFIRMED).toContain(c.method);
+    return fakeNode({ ...r, kind: 'rpc', method: c.method, params: c.params, wallet: c.wallet } as BridgeRequest);
+  }
   calls.push(r);
   const p = (r.params ?? []) as unknown[];
   switch (r.method) {
@@ -575,7 +585,7 @@ describe.runIf(CHAIN.name === 'Hivemind')('the pages of Hivemind', () => {
     const quote = previewTrade(markets[0], 1, Number(shares))!.total;
     expect(quote).toBeLessThanOrEqual(0.5 + 1e-8);
     expect(Number(max)).toBeCloseTo(maxCost(quote, 0.02), 6);
-    expect(hm.journal.trades).toMatchObject([{ wallet: 'w', market: id('a'), state: 1, coins: 0.5 }]);
+    await waitFor(() => expect(hm.journal.trades).toMatchObject([{ wallet: 'w', market: id('a'), state: 1, coins: 0.5 }]));
     // Sell all of the shares of the account.
     await fireEvent.click(within(trade).getByRole('tab', { name: 'Sell' }));
     await fireEvent.click(within(trade).getByRole('button', { name: 'All' }));
@@ -584,7 +594,7 @@ describe.runIf(CHAIN.name === 'Hivemind')('the pages of Hivemind', () => {
     await answer('yes');
     await waitFor(() => expect(called('sellshares').length).toBe(1));
     expect(called('sellshares')[0].params).toEqual([id('a'), 1, '2.00000000', ME, expect.any(String)]);
-    expect(hm.journal.trades.length).toBe(2);
+    await waitFor(() => expect(hm.journal.trades.length).toBe(2));
   });
 
   it('Create: a market on a new yes or no decision, listed first, opened once it is in a block', async () => {
