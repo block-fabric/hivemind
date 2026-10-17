@@ -1016,6 +1016,7 @@ BOOST_AUTO_TEST_CASE(assembly_fills_the_payout_bound)
     const CBlock next{Mine()};
     BOOST_CHECK(InBlock(next, refund_txs[3]));
     BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
+}
 
 BOOST_AUTO_TEST_CASE(unreachable_record_failures_forgotten)
 {

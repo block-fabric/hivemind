@@ -17,6 +17,7 @@
 #include <util/strencodings.h>
 
 #include <algorithm>
+#include <limits>
 #include <numeric>
 #include <set>
 
@@ -488,7 +489,7 @@ std::string State::WhyNoTrade(const Id& market_id, uint8_t state, int64_t shares
     const uint32_t period{Period()};
     for (const Id& id : market.opening.decisions) {
         const auto decision{GetDecision(id)};
-        if (!decision) continue;
+        if (!decision) return strprintf("Trading in the market \"%s\" is closed: one of its decisions is not on the chain.", market.opening.text);
         if (decision->resolved || period > decision->listing.event_period) {
             return strprintf("Trading in the market \"%s\" is closed: its decision \"%s\" was about period %u, and the chain is in period %u. "
                              "From the end of that period on the answer is voted on, and shares are neither sold nor bought back until the market pays out.",
@@ -498,6 +499,13 @@ std::string State::WhyNoTrade(const Id& market_id, uint8_t state, int64_t shares
     if (state >= market.shares.size()) return strprintf("The market has the states 0 to %u.", unsigned(market.shares.size() - 1));
     if (shares == 0) return "The number of shares must not be zero.";
     if (shares < 0 && market.shares[state] + shares < 0) return "The market has not sold as many shares of this state as that.";
+    // As Quote() checks it: a trade whose cost is beyond all the money there can be is not quoted.
+    std::vector<int64_t> after{market.shares};
+    if (shares > 0 && after[state] > std::numeric_limits<int64_t>::max() - shares) return "That is more shares than a market can hold.";
+    after[state] += shares;
+    if (std::abs(LmsrTradeCost(market.shares, after, market.opening.liquidity)) > MAX_MONEY) {
+        return strprintf("The trade would cost more than %s, all the money there can be: trade fewer shares.", FormatMoney(MAX_MONEY));
+    }
     return {};
 }
 

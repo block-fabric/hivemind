@@ -128,6 +128,12 @@ class HivemindWalletTest(SidechainTest):
         assert_raises_rpc_error(-8, "The chain would refuse this transaction (bad-hm-fee)", side.createmarket, "Dear", [one], 1, 1001)
         self.mine_txs()
         assert_raises_rpc_error(-8, "The number of shares must not be zero", side.quotetrade, market, 1, 0)
+        # A state out of range is refused, not cut to a byte: 256 is not state 0 (audit 7 E-HM5).
+        assert_raises_rpc_error(-8, "A state is a number from 0 to 15", side.quotetrade, market, 256, 1)
+        assert_raises_rpc_error(-8, "A state is a number from 0 to 15", side.quotetrade, market, -1, 1)
+        assert_raises_rpc_error(-8, "A state is a number from 0 to 15", side.buyshares, market, 257, 1)
+        assert_raises_rpc_error(-8, "A state is a number from 0 to 15", side.sellshares, market, 256, 1, alice_pkh)
+        assert_raises_rpc_error(-8, "The market has the states 0 to 1", side.quotetrade, market, 2, 1)
         assert_raises_rpc_error(-5, "Shares are held by a P2WPKH address", side.buyshares, market, 1, 1, None, alice_pkh)
 
         self.log.info("A reorganisation takes back a block of actions; they go back to the mempool, and are mined again")
