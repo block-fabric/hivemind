@@ -72,6 +72,25 @@ export interface Journal {
   notified: string[];
   /** The decisions this wallet listed and the markets it opened (ids), by wallet. */
   mine: Record<string, string[]>;
+  /**
+   * The markets of the Create wizard that wait for their decisions to be mined (creation.svelte.ts): kept
+   * here so that a restart of the app resumes them (audit 7 E-HM1: they were in memory only).
+   */
+  pending: PendingCreation[];
+}
+
+/** A market the Create wizard opens once its decisions are in a block. */
+export interface PendingCreation {
+  /** The first transaction of the job: what it is known by. */
+  key: string;
+  wallet: string;
+  title: string;
+  decisions: string[];
+  /** How many decisions the market is about: fewer listed when the app closed in the middle of listing them. */
+  expected: number;
+  market: { text: string; liquidity: number; feebps: number };
+  txids: string[];
+  time: number;
 }
 
 /** Sizes the journal is kept to (a few hundred kB at most; the seals are not capped). */
@@ -82,9 +101,10 @@ const MAX_PRICED_MARKETS = 40;
 const MAX_REP_POINTS = 120;
 const MAX_NOTIFIED = 300;
 const MAX_MINE = 200;
+const MAX_PENDING = 12;
 
 export function emptyJournal(): Journal {
-  return { sealed: {}, votes: [], trades: [], prices: {}, rep: {}, reminders: true, notified: [], mine: {} };
+  return { sealed: {}, votes: [], trades: [], prices: {}, rep: {}, reminders: true, notified: [], mine: {}, pending: [] };
 }
 
 export const hm = $state({
@@ -165,6 +185,11 @@ export function onRefresh(fn: () => unknown): void {
   if (!afterRefresh.includes(fn)) afterRefresh.push(fn);
 }
 let journalLoaded = false;
+/** Whether the journal was read back (loadJournal done): what waits in it can be taken up. */
+let journalRead = false;
+export function journalReady(): boolean {
+  return journalRead;
+}
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 /** Whether the user was told that the journal cannot be saved (once). */
 let journalWarned = false;
@@ -200,11 +225,13 @@ export async function loadJournal(): Promise<void> {
       const moved = (await saveSeals()) && (await writeJournal());
       if (moved) host.setPrefs({ hivemind: null }).catch(() => undefined);
     }
+    journalRead = true;
     return;
   }
   const journal = sanitizeJournal(stores?.journal ?? null);
   journal.sealed = sanitizeJournal({ sealed: stores?.seals?.sealed ?? {} }).sealed;
   hm.journal = journal;
+  journalRead = true;
 }
 
 /** A journal read back, with what is not of the expected shape left out. */
@@ -219,7 +246,12 @@ export function sanitizeJournal(raw: unknown): Journal {
     }
   }
   if (Array.isArray(r.votes)) j.votes = r.votes.filter((v) => v && str(v.decision) && str(v.answer) && str(v.wallet)).slice(0, MAX_VOTES);
-  if (Array.isArray(r.trades)) j.trades = r.trades.filter((x) => x && str(x.market) && typeof x.shares === 'number' && typeof x.coins === 'number' && str(x.wallet)).slice(-MAX_TRADES);
+  if (Array.isArray(r.trades)) {
+    j.trades = r.trades
+      .filter((x) => x && str(x.market) && typeof x.shares === 'number' && typeof x.coins === 'number' && str(x.wallet))
+      .map((x) => (x.status === undefined || x.status === 'pending' || x.status === 'done' || x.status === 'refused' ? x : { ...x, status: 'pending' as const }))
+      .slice(-MAX_TRADES);
+  }
   if (r.prices && typeof r.prices === 'object') {
     for (const [k, v] of Object.entries(r.prices)) if (Array.isArray(v)) j.prices[k] = v.filter((p) => p && typeof p.h === 'number' && Array.isArray(p.p)).slice(-MAX_POINTS);
   }
@@ -230,6 +262,16 @@ export function sanitizeJournal(raw: unknown): Journal {
   if (Array.isArray(r.notified)) j.notified = r.notified.filter(str).slice(-MAX_NOTIFIED);
   if (r.mine && typeof r.mine === 'object') {
     for (const [k, v] of Object.entries(r.mine)) if (Array.isArray(v)) j.mine[k] = v.filter(str).slice(-MAX_MINE);
+  }
+  if (Array.isArray(r.pending)) {
+    const strs = (v: unknown) => Array.isArray(v) && v.every(str);
+    j.pending = r.pending
+      .filter(
+        (p) =>
+          p && str(p.key) && str(p.wallet) && str(p.title) && strs(p.decisions) && strs(p.txids) && typeof p.time === 'number' && typeof p.expected === 'number' &&
+          p.market && str(p.market.text) && typeof p.market.liquidity === 'number' && typeof p.market.feebps === 'number',
+      )
+      .slice(0, MAX_PENDING);
   }
   return j;
 }
@@ -249,6 +291,22 @@ async function writeJournal(): Promise<boolean> {
     }
     return false;
   }
+}
+
+/** Write the journal now (a market waiting to open must not wait for the timer: the app may close). */
+export async function flushJournal(): Promise<boolean> {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  return writeJournal();
+}
+
+/** Keep a market waiting to open, or forget it (by its key). */
+export async function notePending(key: string, rec: PendingCreation | null): Promise<boolean> {
+  const rest = hm.journal.pending.filter((p) => p.key !== key);
+  hm.journal.pending = rec ? [rec, ...rest].slice(0, MAX_PENDING) : rest;
+  return flushJournal();
 }
 
 /** Write the journal back, a moment after the last change. */
@@ -301,9 +359,61 @@ export function noteRevealed(wallet: string, account: string, decision: string, 
   saveJournal();
 }
 
+/** A trade sent: pending until its transaction is in a block and the chain shows what it did (reconcileTrades). */
 export function noteTrade(rec: TradeRecord): void {
-  hm.journal.trades = [...hm.journal.trades, rec].slice(-MAX_TRADES);
+  hm.journal.trades = [...hm.journal.trades, { ...rec, status: rec.status ?? 'pending' }].slice(-MAX_TRADES);
   saveJournal();
+}
+
+/**
+ * Settle the trades still pending of the wallet loaded against the chain (audit 7 E-HM4: a trade was counted
+ * as it was quoted, also when the chain never did it). Once its transaction is in a block the positions were
+ * read at: a purchase (to a new account each time) did happen when that account holds its shares, and was
+ * given back when it holds none; a sale did happen when the account holds the shares it had less those sold,
+ * none when it holds as many as before, and the whole position when it holds none (the rest would have been too
+ * small: the shares are then all it held, the coins as quoted for the part). A transaction gone from the
+ * wallet (conflicted) did nothing.
+ */
+export async function reconcileTrades(): Promise<void> {
+  const wallet = hm.wallet;
+  if (wallet === null) return;
+  const pending = hm.journal.trades.filter((x) => x.wallet === wallet && x.status === 'pending');
+  if (!pending.length) return;
+  const height = hm.height;
+  const held = (account: string | undefined, market: string, state: number) =>
+    hm.positions.filter((p) => p.account === account && p.market === market && p.state === state).reduce((n, p) => n + p.shares, 0);
+  let changed = false;
+  for (const x of pending.slice(-50)) {
+    let tx: { confirmations?: number; blockheight?: number } | null = null;
+    try {
+      tx = await rpc.raw<{ confirmations?: number; blockheight?: number }>('gettransaction', [x.txid], { wallet });
+    } catch {
+      continue;
+    }
+    const conf = tx?.confirmations ?? 0;
+    let status: TradeRecord['status'] = 'pending';
+    let shares = x.shares;
+    if (conf < 0) {
+      status = 'refused';
+    } else if (conf > 0 && tx?.blockheight !== undefined && tx.blockheight <= height && x.account) {
+      const now = held(x.account, x.market, x.state);
+      if (x.shares > 0) {
+        status = now > 0 ? 'done' : 'refused';
+      } else if (x.before === undefined) {
+        status = 'done';
+      } else if (Math.abs(now - x.before) < 1e-9) {
+        status = 'refused';
+      } else {
+        status = 'done';
+        if (now === 0) shares = -x.before;
+      }
+    }
+    if (status === 'pending') continue;
+    const at = hm.journal.trades.indexOf(x);
+    if (at >= 0) hm.journal.trades[at] = { ...x, status, shares };
+    changed = true;
+  }
+  if (changed) saveJournal();
 }
 
 /** A decision listed or a market opened by this wallet. */
@@ -521,6 +631,8 @@ let timer: (() => void) | null = null;
  * period counted in time turns without a block). The pages and the cards call it; the first starts it.
  */
 export function startHivemind(): void {
+  // The markets of the Create wizard waiting for a block resume with a refresh, whatever page is open (audit 7 E-HM1).
+  void import('./creation.svelte').catch(() => undefined);
   const tick = () => {
     const tip = node.tip?.hash ?? '';
     if (tip !== lastTip || wallets.current !== lastWallet) {
@@ -547,7 +659,11 @@ export function resetHivemind(): void {
   lastTip = '';
   lastWallet = undefined;
   journalLoaded = false;
+  journalRead = false;
   journalWarned = false;
   ownAddress.clear();
   Object.assign(hm, { info: null, decisions: [], markets: [], positions: [], reputation: [], holders: [], details: {}, wallet: null, height: -1, error: '', loaded: false, journal: emptyJournal(), authored: [], version: 0 });
 }
+
+// The trades sent are settled against the chain with every refresh (audit 7 E-HM4).
+onRefresh(reconcileTrades);

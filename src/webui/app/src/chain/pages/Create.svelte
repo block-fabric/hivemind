@@ -16,7 +16,7 @@
   import '../hm/hm.css';
   import Countdown from '../hm/Countdown.svelte';
   import { decisionProblems, DEFAULT_FEE_BPS, formatChance, formatUnits, LIMITS, lmsrFunding, marketProblems, periodAt, periodEnd, revealStart, type DecisionDraft, type MarketKind } from '../hm/model';
-  import { creation, startCreation } from '../hm/creation.svelte';
+  import { creation, forgetCreation, startCreation } from '../hm/creation.svelte';
   import { hm, startHivemind } from '../hm/store.svelte';
 
   $effect(() => startHivemind());
@@ -172,7 +172,7 @@
         existing: reuse ? picked : [],
         market: withMarket ? { text: fullTitle, liquidity, feebps: feeBps } : null,
       });
-      toast('success', withMarket ? t('Creating the market') : t('Decision listed'), withMarket ? t('The market opens once its decisions are in a block.') : t('It shows with the next block.'));
+      toast('success', withMarket ? t('Creating the market') : t('Decision listed'), withMarket ? t('This app opens the market once its decisions are in a block: keep it open until then (if it closes, it opens the market the next time it runs).') : t('It shows with the next block.'), withMarket ? 12000 : undefined);
     } catch (e) {
       await inform(withMarket ? t('Open the market') : t('List the decision'), errorText(e), 'error');
     }
@@ -208,7 +208,9 @@
             <li>
               <span class="hm-stage" class:live={j.state === 'done'} class:vote={j.state === 'waiting' || j.state === 'sending'} class:bad={j.state === 'failed'}>{j.state === 'done' ? 'Done' : j.state === 'failed' ? 'Failed' : j.state === 'waiting' ? 'Waiting for a block' : 'Sending'}</span>
               <span class="what"><SafeText text={j.title} /></span>
+              {#if j.state === 'waiting'}<span class="faint small">The app opens the market then: keep it open.</span>{/if}
               {#if j.error}<span class="hm-down small"><SafeText text={j.error} /></span>{/if}
+              {#if j.state === 'waiting'}<button type="button" class="btn small ghost" title="Do not open this market (its decisions stay listed)" onclick={() => void forgetCreation(j.id)}>Forget</button>{/if}
               {#if j.marketId}<button type="button" class="btn small" onclick={() => go('markets', `m-${j.marketId}`)}>Open the market</button>{/if}
               {#if j.txids.length}<span class="faint small mono" translate="no">{j.txids.map((x) => shortHash(x, 6)).join(' ')}</span>{/if}
             </li>

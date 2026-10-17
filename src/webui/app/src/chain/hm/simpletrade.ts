@@ -9,8 +9,8 @@ import { shortHash } from '../../lib/format';
 import { rpc } from '../../lib/rpc';
 import { toast } from '../../lib/state.svelte';
 import { CHAIN } from '../config';
-import { LIMITS, maxCost, minProceeds, previewTrade, sharesForBudget, type Market } from './model';
-import { noteTrade, refreshHivemind } from './store.svelte';
+import { chainQuestion, LIMITS, maxCost, minProceeds, previewTrade, sharesForBudget, type Market } from './model';
+import { decisionMap, noteTrade, refreshHivemind } from './store.svelte';
 
 /** The room for the price to move, as the trade panel's default. */
 export const SIMPLE_SLIPPAGE = 0.01;
@@ -66,7 +66,8 @@ export async function placeBet(wallet: string, market: Market, state: number, an
   const bound = maxCost(quote, SIMPLE_SLIPPAGE);
   const r = await ask({
     title: t('Place a bet'),
-    message: t('Bet %1 on “%2” to the question “%3”?', coins(quote), answer, market.text),
+    // The question as the chain has it (the decision), not the title of the market: free text (audit 7 E-HM3).
+    message: t('Bet %1 on “%2” to the question “%3”?', coins(quote), answer, chainQuestion(market, decisionMap())),
     informative: t('If “%1” is the answer you get %2; if not, you lose what you bet. If the price moves before the bet is in a block, it costs at most %3, or nothing happens and the coins stay yours.', answer, coins(shares), coins(bound)),
     level: 'question',
     choices: [
@@ -93,7 +94,7 @@ export async function cashOut(wallet: string, market: Market, state: number, ans
   const about = cashOutPreview(market, state, accounts);
   const r = await ask({
     title: t('Cash out'),
-    message: t('Sell your bet on “%1” to the question “%2” now, for about %3?', answer, market.text, coins(about)),
+    message: t('Sell your bet on “%1” to the question “%2” now, for about %3?', answer, chainQuestion(market, decisionMap()), coins(about)),
     informative: t('The price moves with every bet: each sale takes at most 1% less than the price now, or nothing happens.'),
     level: 'question',
     choices: [
@@ -110,7 +111,7 @@ export async function cashOut(wallet: string, market: Market, state: number, ans
       const bound = minProceeds(quote, SIMPLE_SLIPPAGE);
       const done = await walletRpc<{ txid: string; quote: number; proceeds: number }>(wallet, 'sellshares', [market.id, state, sharesText, a.account, bound.toFixed(8)]);
       if (!done) break;
-      noteTrade({ wallet, market: market.id, state, shares: -a.shares, coins: done.proceeds, time: Math.floor(Date.now() / 1000), txid: done.txid, account: a.account });
+      noteTrade({ wallet, market: market.id, state, shares: -a.shares, coins: done.proceeds, time: Math.floor(Date.now() / 1000), txid: done.txid, account: a.account, before: a.shares });
       sold++;
     } catch (e) {
       await inform(t('Cash out'), errorText(e), 'error');

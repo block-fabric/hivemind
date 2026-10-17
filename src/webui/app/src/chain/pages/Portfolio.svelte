@@ -40,7 +40,9 @@
   );
   const worth = $derived(rows.reduce((n, r) => n + r.pnl.worth, 0));
   const paysIfRight = $derived(rows.reduce((n, r) => n + r.shares, 0));
-  const costed = $derived(rows.filter((r) => r.pnl.pnl !== null));
+  // Only the positions the trades recorded explain whole: one traded in part outside this app, or with a trade
+  // not yet settled by the chain, would count shares it never paid for (audit 7 E-HM4).
+  const costed = $derived(rows.filter((r) => r.pnl.pnl !== null && r.pnl.complete));
   const pnl = $derived(costed.reduce((n, r) => n + (r.pnl.pnl ?? 0), 0));
   const trades = $derived(hm.journal.trades.filter((x) => x.wallet === wallets.current).slice().reverse());
   const marketText = (id: string) => hm.markets.find((m) => m.id === id)?.text ?? '';
@@ -59,7 +61,7 @@
     <section class="hm-figures">
       <div class="panel hm-figure"><span class="muted">Worth now</span><strong class="num">{formatUnits(worth, 4)}</strong><span class="faint small">at the chances of the markets</span></div>
       <div class="panel hm-figure"><span class="muted">Positions</span><strong class="num">{rows.length}</strong><span class="faint small">in {new Set(rows.map((r) => r.market)).size} market(s)</span></div>
-      <div class="panel hm-figure"><span class="muted">Profit or loss</span><strong class="num" class:hm-up={pnl > 0} class:hm-down={pnl < 0}>{costed.length ? `${pnl >= 0 ? '+' : ''}${formatUnits(pnl, 4)}` : '–'}</strong><span class="faint small">of the trades placed in this app</span></div>
+      <div class="panel hm-figure"><span class="muted">Profit or loss</span><strong class="num" class:hm-up={pnl > 0} class:hm-down={pnl < 0}>{costed.length ? `${pnl >= 0 ? '+' : ''}${formatUnits(pnl, 4)}` : '–'}</strong><span class="faint small">of the trades placed in this app{#if costed.length < rows.filter((r) => r.pnl.pnl !== null).length}, the positions marked * left out{/if}</span></div>
       <div class="panel hm-figure"><span class="muted">At most it pays</span><strong class="num">{formatUnits(paysIfRight, 4)}</strong><span class="faint small">if every outcome held comes true</span></div>
     </section>
 
@@ -80,7 +82,7 @@
                   <td class="end num" title={r.pnl.basis === null ? undefined : `Paid ${formatUnits(r.pnl.basis, 4)} for the shares held, fee included`}>{r.pnl.avgPrice === null ? '–' : formatUnits(r.pnl.avgPrice, 4)}</td>
                   <td class="end num">{formatChance(r.price)}</td>
                   <td class="end num">{formatUnits(r.pnl.worth, 4)}</td>
-                  <td class="end num" class:hm-up={(r.pnl.pnl ?? 0) > 0} class:hm-down={(r.pnl.pnl ?? 0) < 0}>{r.pnl.pnl === null ? '–' : `${r.pnl.pnl >= 0 ? '+' : ''}${formatUnits(r.pnl.pnl, 4)}`}{#if r.pnl.cost !== null && !r.pnl.complete}<span class="faint" title="Some of the shares were traded outside this app"> *</span>{/if}</td>
+                  <td class="end num" class:hm-up={(r.pnl.pnl ?? 0) > 0} class:hm-down={(r.pnl.pnl ?? 0) < 0}>{r.pnl.pnl === null ? '–' : `${r.pnl.pnl >= 0 ? '+' : ''}${formatUnits(r.pnl.pnl, 4)}`}{#if r.pnl.cost !== null && !r.pnl.complete}<span class="faint" title="Some of the shares were traded outside this app, or a trade is not in a block yet: left out of the total"> *</span>{/if}</td>
                   <td><span class="hm-stage" class:live={r.m?.status === 'trading'} class:vote={r.m?.status === 'closed'}>{r.m?.status === 'trading' ? 'Trading' : 'Being voted on'}</span></td>
                   <td class="end">{#if r.m?.status === 'trading'}<button type="button" class="btn small ghost" onclick={(e) => { e.stopPropagation(); openTrade(r.market, r.state, 'sell'); }}>Sell…</button>{/if}</td>
                 </tr>
@@ -108,7 +110,7 @@
                   <td>{formatTime(x.time, true)}</td>
                   <td class="cut"><SafeText text={titleWithoutCategory(marketText(x.market) || x.market)} /></td>
                   <td><span class="status {x.shares > 0 ? 'ok' : 'bad'}">{x.shares > 0 ? 'Buy' : 'Sell'}</span> {#if o}<OutcomeName outcome={o} />{/if}</td>
-                  <td class="end num">{formatUnits(Math.abs(x.shares))}</td>
+                  <td class="end num">{formatUnits(Math.abs(x.shares))}{#if x.status === 'pending'} <span class="faint small" title="Not in a block yet: the chain may still give it back or skip it">pending</span>{:else if x.status === 'refused'} <span class="hm-down small" title="The chain did not do it: the coins or the shares stayed yours">not done</span>{/if}</td>
                   <td class="end num">{x.shares > 0 ? '−' : '+'}{formatUnits(x.coins, 4)}</td>
                   <td class="end num">{formatUnits(x.coins / Math.abs(x.shares), 4)}</td>
                   <td class="mono"><span translate="no">{shortHash(x.txid, 8)}</span></td>

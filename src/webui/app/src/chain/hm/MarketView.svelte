@@ -41,7 +41,11 @@
   const outcomes = $derived(market ? outcomesOf(market, decisions) : []);
   const kind = $derived(market ? marketKind(market, decisions) : 'binary');
   const about = $derived(market ? market.decisions.map((d) => decisions.get(d)).filter((d) => d !== undefined) : []);
-  const question = $derived(kind === 'categorical' ? commonQuestion(about.map((d) => d.text)) : '');
+  // Under the title, the question of the chain: what the decisions have in common, or the decision's own text
+  // when the title (free text) says something else (audit 7 E-HM3).
+  const question = $derived(
+    kind === 'categorical' ? commonQuestion(about.map((d) => d.text)) : about[0] && market && about[0].text !== titleWithoutCategory(market.text) ? about[0].text : '',
+  );
   const estimate = $derived(market && kind === 'scalar' && about[0] ? scalarEstimate(market, about[0]) : null);
   const category = $derived(market ? categoryOf(market.text) : null);
   const held = $derived(hm.positions.filter((p) => p.market === id));

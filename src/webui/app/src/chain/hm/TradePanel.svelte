@@ -11,8 +11,8 @@
   import { toast, wallets } from '../../lib/state.svelte';
   import { shortHash } from '../../lib/format';
   import OutcomeName from './OutcomeName.svelte';
-  import { describeOutcome, formatChance, formatUnits, LIMITS, maxCost, minProceeds, previewTrade, sharesForBudget, type Market, type Outcome, type WalletPosition } from './model';
-  import { noteTrade, refreshHivemind } from './store.svelte';
+  import { chainQuestion, describeOutcome, formatChance, formatUnits, LIMITS, maxCost, minProceeds, previewTrade, sharesForBudget, type Market, type Outcome, type WalletPosition } from './model';
+  import { decisionMap, noteTrade, refreshHivemind } from './store.svelte';
 
   let {
     market,
@@ -93,13 +93,16 @@
     if (wallet === null || !preview || problem) return;
     const o = outcomes.find((x) => x.state === chosen);
     const name = o ? describeOutcome(o) : String(chosen);
+    // The question of the chain next to the title: the title is free text, the decision is what pays.
+    const asked = chainQuestion(market, decisionMap());
+    const before = inAccount;
     const r = await ask({
       title: side === 'buy' ? t('Buy shares') : t('Sell shares'),
       message:
         side === 'buy'
-          ? t('Buy %1 shares of “%2” in “%3” for about %4? The order pays at most %5.', formatUnits(shares), name, market.text, formatUnits(total), formatUnits(bound))
-          : t('Sell %1 shares of “%2” in “%3” for about %4? The order takes at least %5.', formatUnits(shares), name, market.text, formatUnits(total), formatUnits(bound)),
-      informative: t('Prices move with every trade. If the price moved by more than the slippage when the transaction is mined, nothing is traded and the coins come back.'),
+          ? t('Buy %1 shares of “%2” on the question “%3” (market “%4”) for about %5? The order pays at most %6.', formatUnits(shares), name, asked, market.text, formatUnits(total), formatUnits(bound))
+          : t('Sell %1 shares of “%2” on the question “%3” (market “%4”) for about %5? The order takes at least %6.', formatUnits(shares), name, asked, market.text, formatUnits(total), formatUnits(bound)),
+      informative: t('The question is the decision on the chain: its answer decides what a share pays, whatever the title of the market says. Prices move with every trade. If the price moved by more than the slippage when the transaction is mined, nothing is traded and the coins come back.'),
       level: 'question',
       choices: [
         { id: 'no', label: 'Cancel' },
@@ -117,7 +120,7 @@
       } else {
         const done = await walletRpc<{ txid: string; quote: number; proceeds: number }>(wallet, 'sellshares', [market.id, chosen, sharesText, account, bound.toFixed(8)]);
         if (!done) return;
-        noteTrade({ wallet, market: market.id, state: chosen, shares: -shares, coins: done.proceeds, time: Math.floor(Date.now() / 1000), txid: done.txid, account });
+        noteTrade({ wallet, market: market.id, state: chosen, shares: -shares, coins: done.proceeds, time: Math.floor(Date.now() / 1000), txid: done.txid, account, before });
         toast('success', t('Order placed'), t('Sold %1 shares, in the transaction %2. The proceeds come with the next block.', formatUnits(shares), shortHash(done.txid, 10)));
       }
       amountText = '';

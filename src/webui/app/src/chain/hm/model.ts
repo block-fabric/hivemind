@@ -236,6 +236,17 @@ export function commonQuestion(texts: readonly string[]): string {
 }
 
 /**
+ * The question a market is about as the chain has it: the text of its decision, or what its decisions have in
+ * common (their texts when nothing). The title of a market is free text of whoever opened it and may say the
+ * opposite of its decision; a confirmation names this (audit 7 E-HM3). Text of the chain.
+ */
+export function chainQuestion(market: Pick<Market, 'decisions'>, decisions: ReadonlyMap<string, Decision>): string {
+  const texts = market.decisions.map((id) => decisions.get(id)?.text ?? `${id.slice(0, 12)}…`);
+  if (texts.length === 1) return texts[0];
+  return commonQuestion(texts) || texts.join(' / ');
+}
+
+/**
  * A state of a market, in parts the page draws: for one decision, yes or no (low or high for a scale);
  * for several, the options answered yes. `exclusive` marks the states of a categorical market with
  * exactly one yes: the outcomes it is about; the others are combinations that should not come true.
@@ -519,6 +530,13 @@ export interface TradeRecord {
   time: number;
   txid: string;
   account?: string;
+  /**
+   * Pending until the transaction is in a block and the chain shows what it did; refused when the chain did
+   * not do it (a purchase given back, a sale skipped). Records of older versions have none: counted as done.
+   */
+  status?: 'pending' | 'done' | 'refused';
+  /** A sale: the shares the account held before it (to tell a sale skipped from one done). */
+  before?: number;
 }
 
 export interface Pnl {
@@ -545,7 +563,9 @@ export interface Pnl {
 }
 
 /** The profit and loss of a position: the shares held at the price now, against the trades recorded (average cost). */
-export function pnlOf(held: number, price: number, trades: readonly TradeRecord[]): Pnl {
+export function pnlOf(held: number, price: number, allTrades: readonly TradeRecord[]): Pnl {
+  // Only the trades the chain did: a pending one may still be given back or skipped (audit 7 E-HM4).
+  const trades = allTrades.filter((x) => x.status === undefined || x.status === 'done');
   const bought = trades.filter((x) => x.shares > 0);
   const sold = trades.filter((x) => x.shares < 0);
   const cost = bought.reduce((n, x) => n + x.coins, 0);

@@ -16,7 +16,8 @@ import Payouts from './pages/Payouts.svelte';
 import Portfolio from './pages/Portfolio.svelte';
 import Votecoin from './pages/Votecoin.svelte';
 import Voting from './pages/Voting.svelte';
-import { creation } from './hm/creation.svelte';
+import { creation, resetCreation, startCreation } from './hm/creation.svelte';
+import { placeBet } from './hm/simpletrade';
 import {
   categoryOf,
   clockOf,
@@ -48,7 +49,7 @@ import {
   type HivemindInfo,
   type Market,
 } from './hm/model';
-import { hm, notePrices, resetHivemind, sanitizeJournal } from './hm/store.svelte';
+import { hm, notePrices, refreshHivemind, resetHivemind, sanitizeJournal } from './hm/store.svelte';
 import Countdown from './hm/Countdown.svelte';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -247,7 +248,7 @@ beforeEach(() => {
   ballotOnChain = null;
   calls.length = 0;
   resetHivemind();
-  creation.jobs = [];
+  resetCreation();
   setTransport(fakeNode);
 });
 
@@ -1012,5 +1013,99 @@ describe('Simple mode', () => {
   it('the first steps of Hivemind: Drivechains, the questions, my bets', async () => {
     const { FIRST_STEPS } = await import('./firststeps');
     expect(FIRST_STEPS.map((s) => s.action?.page)).toEqual(['peg', 'markets', 'portfolio']);
+  });
+});
+
+describe('audit 7 E', () => {
+  const SNOW = { text: '[Weather] Snow', liquidity: 1, feebps: 50 };
+  const journalOf = () => stores.journal as { pending?: { decisions: string[]; expected: number }[]; trades?: { txid: string; status?: string; shares: number }[] };
+
+  it('E-HM1: a market waiting for its decision is kept in the journal and opened after a restart of the app', async () => {
+    await refreshHivemind();
+    const job = await startCreation({ wallet: 'w', drafts: [{ text: 'Will it snow?', eventperiod: 5, voteperiods: 1, scaled: false, min: 0, max: 1 }], existing: [], market: SNOW });
+    expect(job.state).toBe('waiting');
+    const listedId = job.decisions[0];
+    expect(journalOf().pending).toEqual([expect.objectContaining({ decisions: [listedId], expected: 1, market: SNOW })]);
+    // The app closes before the block; it starts again: the job is back, waiting, and the user is told.
+    resetHivemind();
+    resetCreation();
+    await refreshHivemind();
+    await waitFor(() => expect(creation.jobs.map((j) => [j.state, j.resumed])).toEqual([['waiting', true]]));
+    expect(called('createmarket').length).toBe(0);
+    // The decision mined: the market opens, and the journal forgets the job.
+    decisions = [...decisions, { ...decision('7', { text: 'Will it snow?' }), id: listedId }];
+    node.tip = { ...node.tip!, height: 21, hash: 'cd'.repeat(32) };
+    await refreshHivemind();
+    await waitFor(() => expect(called('createmarket').length).toBe(1));
+    expect(called('createmarket')[0].params).toEqual([SNOW.text, [listedId], '1.00000000', 50]);
+    await waitFor(() => expect(journalOf().pending).toEqual([]));
+    expect(creation.jobs[0].state).toBe('done');
+  });
+
+  it('E-HM1: a job cut off in the middle of its decisions is not opened on a part of them; one opened already is not opened twice', async () => {
+    const rec = (key: string, decs: string[], expected: number, text: string) => ({ key, wallet: 'w', title: text, decisions: decs, expected, market: { ...SNOW, text }, txids: [key], time: 1 });
+    stores.journal = { pending: [rec('k1', [id('5')], 2, 'Who wins?'), rec('k2', [id('1')], 1, '[Weather] Rain in Paris')] };
+    await refreshHivemind();
+    await waitFor(() => expect(creation.jobs.map((j) => j.state).sort()).toEqual(['done', 'failed']));
+    expect(creation.jobs.find((j) => j.state === 'failed')!.error).toMatch(/1 of 2/);
+    expect(creation.jobs.find((j) => j.state === 'done')!.marketId).toBe(id('a'));
+    expect(called('createmarket').length).toBe(0);
+    await waitFor(() => expect(journalOf().pending).toEqual([]));
+  });
+
+  it('E-HM1: Decisions shows the markets waiting to open', async () => {
+    stores.journal = { pending: [{ key: 'k', wallet: 'w', title: 'Snow soon', decisions: [id('9')], expected: 1, market: SNOW, txids: ['k'], time: 1 }] };
+    render(Decisions);
+    await loaded();
+    await waitFor(() => expect(screen.getByRole('status', { name: 'Markets waiting to open' }).textContent).toContain('Snow soon'));
+  });
+
+  it('E-HM3: the confirmations name the decision of the chain, not only the title of the market', async () => {
+    markets[0].text = 'Will it NOT rain in Paris?';
+    render(DialogHost);
+    await refreshHivemind();
+    const bet = placeBet('w', hm.markets[0], 1, 'Yes', 0.5);
+    await waitFor(() => expect(dialogs.queue[0]?.title).toBe('Place a bet'));
+    const simple = (dialogs.queue[0] as { message: string }).message;
+    expect(simple).toContain('Will it rain in Paris on 1 May?');
+    expect(simple).not.toContain('NOT');
+    await answer('no');
+    expect(await bet).toBe(false);
+    // Advanced: the question next to the title.
+    go('markets', `m-${id('a')}`);
+    render(Markets);
+    const trade = await waitFor(() => screen.getByRole('region', { name: 'Trade' }));
+    await fireEvent.click(within(trade).getByRole('radio', { name: /Yes/ }));
+    await fireEvent.input(trade.querySelector('#trade-amount')!, { target: { value: '0.5' } });
+    await waitFor(() => expect(within(trade).getByText('Quoted by the node just now.')).toBeTruthy());
+    await fireEvent.click(trade.querySelector('#trade-place')!);
+    await waitFor(() => expect(dialogs.queue[0]?.title).toBe('Buy shares'));
+    const advanced = (dialogs.queue[0] as { message: string }).message;
+    expect(advanced).toContain('Will it rain in Paris on 1 May?');
+    expect(advanced).toContain('Will it NOT rain in Paris?');
+  });
+
+  it('E-HM4: a trade counts once the chain did it; one given back or still pending does not', async () => {
+    const tr = (shares: number, coins: number, status?: 'pending' | 'done' | 'refused') => ({ wallet: 'w', market: 'm', state: 1, shares, coins, time: 0, txid: 'x', status });
+    expect(pnlOf(2, 0.6, [tr(2, 1, 'pending')])).toMatchObject({ cost: null, pnl: null, complete: false });
+    expect(pnlOf(2, 0.6, [tr(2, 1, 'done'), tr(5, 3, 'refused')])).toMatchObject({ cost: 1, complete: true });
+    // A sale that was skipped, recorded at broadcast: no phantom gain.
+    expect(pnlOf(10, 0.5, [tr(10, 5, 'done'), tr(-10, 7, 'refused')]).pnl).toBeCloseTo(0, 12);
+
+    // Settled against the chain: the account of a purchase holds its shares (done), or none (given back);
+    // a sale that left the account as it was did not happen; a transaction not mined stays pending.
+    const t = (txid: string, shares: number, account: string, before?: number) => ({ wallet: 'w', market: id('a'), state: 1, shares, coins: 1, time: 1, txid, account, status: 'pending', before });
+    stores.journal = { trades: [t(id('1'), 2, ME), t(id('2'), 2, OTHER), t(id('3'), -1, ME, 2), t(id('4'), 1, OTHER)] };
+    const mined: Record<string, { confirmations: number; blockheight?: number }> = {
+      [id('1')]: { confirmations: 2, blockheight: 19 },
+      [id('2')]: { confirmations: 2, blockheight: 19 },
+      [id('3')]: { confirmations: 1, blockheight: 20 },
+      [id('4')]: { confirmations: 0 },
+    };
+    setTransport(async (r) => (r.method === 'gettransaction' ? (calls.push(r), mined[(r.params as string[])[0]]) : fakeNode(r)));
+    await refreshHivemind();
+    // Settled after the refresh, and the journal written a moment later (saveJournal): room for a busy machine.
+    await waitFor(() => expect(hm.journal.trades.map((x) => x.status)).toEqual(['done', 'refused', 'refused', 'pending']), { timeout: 5000 });
+    await waitFor(() => expect(journalOf().trades?.map((x) => x.status)).toEqual(['done', 'refused', 'refused', 'pending']), { timeout: 5000 });
   });
 });

@@ -90,6 +90,9 @@ std::map<std::string, Bridge::Thread> RpcMethods()
         // What the wallet holds.
         {"getwalletreputation", Bridge::Thread::WORKER},
         {"getwalletpositions", Bridge::Thread::WORKER},
+        // Whether a trade's transaction is in a block (gettransaction: confirmations, blockheight), to settle the trades
+        // the Portfolio counts against the chain (audit 7 E-HM4). Read only.
+        {"gettransaction", Bridge::Thread::WORKER},
         // What the wallet does, transactions it signs: confirmed on the desktop (ConfirmedRpcMethods, below).
     };
 }

@@ -15,6 +15,7 @@
   import Countdown from '../hm/Countdown.svelte';
   import { clockOf, periodEnd, revealStart, titleWithoutCategory, type Decision, type DecisionStatus } from '../hm/model';
   import { hm, startHivemind, ownItems } from '../hm/store.svelte';
+  import { waitingJobs } from '../hm/creation.svelte';
   import { node, wallets } from '../../lib/state.svelte';
   import { every } from '../../lib/poll';
 
@@ -74,6 +75,14 @@
   </header>
 
   {#if hm.error}<p class="side-note side-bad" role="alert"><SafeText text={hm.error} /></p>{/if}
+  {#if waitingJobs().length}
+    <!-- Markets of the Create wizard waiting for their decisions to be mined (audit 7 E-HM1). -->
+    <p class="side-note" role="status" aria-label="Markets waiting to open">
+      {waitingJobs().length === 1 ? 'A market waits' : `${waitingJobs().length} markets wait`} for {waitingJobs().length === 1 ? 'its' : 'their'} decisions to be in a block:
+      {#each waitingJobs() as j, i (j.id)}{i ? ', ' : ''}“<SafeText text={j.title} />”{/each}. This app opens {waitingJobs().length === 1 ? 'it' : 'them'} then: keep it open.
+      <button type="button" class="btn small ghost" onclick={() => go('create', 'market')}>See in Create</button>
+    </p>
+  {/if}
 
   <div class="tabs" role="tablist" aria-label="Decisions">
     {#each TABS as tb (tb.id)}
