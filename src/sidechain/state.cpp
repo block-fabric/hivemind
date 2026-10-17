@@ -297,7 +297,9 @@ bool State::ApplyMainEvents(int main_height, const Mainchain& mainchain, int hei
     MAIN_HEIGHT.Put(Writable(), main_height);
 
     // The markets go by the clock of the mainchain: resolve what is due, pay what is decided.
-    const auto main_block{mainchain.GetBlock(main_height)};
+    // (Not below the block that activated this chain in its slot: a new record of the mainchain starts
+    // there, Mainchain::Base, one kept from an earlier release below it; the time must not depend on which.)
+    const auto main_block{main_height >= params.main_activation_height ? mainchain.GetBlock(main_height) : std::nullopt};
     std::vector<CTxOut> settled;
     hivemind::State{Writable()}.BeginBlock(height, main_block ? main_block->time : 0, params.hivemind, settled);
     // What the markets pay is of transactions, and waits with what they gave rise to: in the
