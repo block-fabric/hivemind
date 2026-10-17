@@ -22,6 +22,16 @@
 namespace wallet {
 namespace {
 
+//! The state argument of a trade, refused out of range rather than cut to a byte (state 256 is not state 0).
+uint8_t ParseStateArg(const UniValue& value)
+{
+    const int state{value.getInt<int>()};
+    if (state < 0 || state >= int(hivemind::MAX_STATES)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("A state is a number from 0 to %u.", unsigned(hivemind::MAX_STATES - 1)));
+    }
+    return static_cast<uint8_t>(state);
+}
+
 using hivemind::Account;
 using hivemind::Action;
 
@@ -360,7 +370,7 @@ RPCMethod buyshares()
     if (!pwallet) return UniValue::VNULL;
     hivemind::BuyShares buy;
     buy.market = ParseHashV(request.params[0], "market");
-    buy.state = static_cast<uint8_t>(request.params[1].getInt<int>());
+    buy.state = ParseStateArg(request.params[1]);
     buy.shares = AmountFromValue(request.params[2]);
     if (buy.shares <= 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "The number of shares must be positive");
     const auto quote{pwallet->chain().quoteMarketTrade(buy.market, buy.state, buy.shares)};
@@ -412,7 +422,7 @@ RPCMethod sellshares()
     if (!pwallet) return UniValue::VNULL;
     hivemind::SellShares sell;
     sell.market = ParseHashV(request.params[0], "market");
-    sell.state = static_cast<uint8_t>(request.params[1].getInt<int>());
+    sell.state = ParseStateArg(request.params[1]);
     sell.shares = AmountFromValue(request.params[2]);
     if (sell.shares <= 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "The number of shares must be positive");
     sell.account = ParseTradeAccount(request.params[3]);

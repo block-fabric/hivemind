@@ -23,6 +23,16 @@ using hivemind::ONE;
 
 namespace {
 
+//! The state argument of a trade, refused out of range rather than cut to a byte (state 256 is not state 0).
+uint8_t ParseStateArg(const UniValue& value)
+{
+    const int state{value.getInt<int>()};
+    if (state < 0 || state >= int(hivemind::MAX_STATES)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("A state is a number from 0 to %u.", unsigned(hivemind::MAX_STATES - 1)));
+    }
+    return static_cast<uint8_t>(state);
+}
+
 std::string AccountAddress(const Account& account) { return EncodeDestination(WitnessV0KeyHash{account}); }
 
 Account ParseAccount(const UniValue& value)
@@ -384,7 +394,7 @@ RPCMethod quotetrade()
     magnitude.setNumStr(selling ? amount.getValStr().substr(1) : amount.getValStr());
     const CAmount shares{AmountFromValue(magnitude)};
     const uint256 market{ParseHashV(request.params[0], "market")};
-    const auto state{static_cast<uint8_t>(request.params[1].getInt<int>())};
+    const auto state{ParseStateArg(request.params[1])};
     const auto quote{view.state.Quote(market, state, selling ? -shares : shares)};
     if (!quote) throw JSONRPCError(RPC_INVALID_PARAMETER, view.state.WhyNoTrade(market, state, selling ? -shares : shares));
     return ValueFromAmount(*quote);

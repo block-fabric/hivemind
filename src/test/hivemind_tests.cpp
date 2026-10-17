@@ -2222,4 +2222,24 @@ BOOST_AUTO_TEST_CASE(share_of_the_largest_amounts)
     BOOST_CHECK((hivemind::Share({0, -5}, 100) == std::vector<int64_t>{0, 0}));
 }
 
+BOOST_AUTO_TEST_CASE(why_no_trade_says_why_a_quote_is_refused)
+{
+    // Every trade Quote() refuses has a reason (audit 7 E-HM5): a cost beyond MAX_MONEY used to give an empty one.
+    Consensus::HivemindParams params;
+    params.period_blocks = 6;
+    TestMarkets markets;
+    hivemind::State& state{markets.state};
+    std::vector<CTxOut> payouts;
+    state.BeginBlock(1, 0, params, payouts);
+    const hivemind::Id market{ListAndOpen(state, params, 1, 2, 1, payouts)};
+    BOOST_CHECK(state.Quote(market, 1, ONE));
+    BOOST_CHECK(state.WhyNoTrade(market, 1, ONE).empty());
+    const int64_t huge{2 * MAX_MONEY};
+    BOOST_CHECK(!state.Quote(market, 1, huge));
+    BOOST_CHECK(state.WhyNoTrade(market, 1, huge).find("all the money there can be") != std::string::npos);
+    BOOST_CHECK(!state.Quote(market, 2, ONE));
+    BOOST_CHECK(state.WhyNoTrade(market, 2, ONE).find("states 0 to 1") != std::string::npos);
+    BOOST_CHECK(!state.WhyNoTrade(market, 1, 0).empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
