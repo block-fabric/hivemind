@@ -163,6 +163,8 @@ public:
         //! If set, the voting periods of the markets are this many seconds of mainchain time, as on the other
         //! networks, instead of a few blocks.
         std::optional<int64_t> hivemind_period_seconds{};
+        //! With sidechain_slot: SidechainParams::main_activation_height.
+        int sidechain_activation_height{0};
         //! Drivechain parameters to set, by the name of their field in Consensus::DrivechainParams.
         std::vector<std::pair<std::string, int>> drivechain_params{};
     };
