@@ -1053,6 +1053,24 @@ describe('audit 7 E', () => {
     await waitFor(() => expect(journalOf().pending).toEqual([]));
   });
 
+  it('E-HM1: a quit while a market waits to open asks in the dialog of the host, with its title; none once it opened', async () => {
+    const { quitWarning } = await import('./hm/creation.svelte');
+    expect(quitWarning([])).toBeNull();
+    expect(quitWarning([{ title: '[Weather] Snow' }])).toBe('A market is still being created ([Weather] Snow). If you quit now it resumes the next time you open Hivemind.');
+    expect(quitWarning([{ title: 'a' }, { title: 'b' }, { title: 'c' }, { title: 'd' }])).toBe('4 markets are still being created (a, b, c, …). If you quit now they resume the next time you open Hivemind.');
+    const guards = () => called('app.quitGuard').map((r) => (r.params as { message: string | null }).message);
+    await refreshHivemind();
+    const job = await startCreation({ wallet: 'w', drafts: [{ text: 'Will it snow?', eventperiod: 5, voteperiods: 1, scaled: false, min: 0, max: 1 }], existing: [], market: SNOW });
+    expect(job.state).toBe('waiting');
+    await waitFor(() => expect(guards().at(-1)).toBe('A market is still being created ([Weather] Snow). If you quit now it resumes the next time you open Hivemind.'));
+    // The decision mined, the market opened: a quit no longer asks.
+    decisions = [...decisions, { ...decision('7', { text: 'Will it snow?' }), id: job.decisions[0] }];
+    node.tip = { ...node.tip!, height: 21, hash: 'cd'.repeat(32) };
+    await refreshHivemind();
+    await waitFor(() => expect(called('createmarket').length).toBe(1));
+    await waitFor(() => expect(guards().at(-1)).toBeNull());
+  });
+
   it('E-HM1: Decisions shows the markets waiting to open', async () => {
     stores.journal = { pending: [{ key: 'k', wallet: 'w', title: 'Snow soon', decisions: [id('9')], expected: 1, market: SNOW, txids: ['k'], time: 1 }] };
     render(Decisions);

@@ -6,6 +6,7 @@
 import { t } from '../../lib/i18n.svelte';
 import { errorText, walletRpc } from '../../lib/dialogs.svelte';
 import { toast } from '../../lib/state.svelte';
+import { setQuitGuard } from '../../lib/quitguard';
 import type { DecisionDraft } from './model';
 import { hm, journalReady, noteMine, notePending, onRefresh, refreshHivemind, type PendingCreation } from './store.svelte';
 
@@ -182,4 +183,20 @@ export function resetCreation(): void {
   resumed = false;
 }
 
+/**
+ * What the host says before a quit while the journal keeps markets waiting to open (audit 7 E-HM1): a quit then is
+ * asked in the dialog of the host, "Keep Hivemind open" the default (lib/quitguard.ts). Null when none waits.
+ */
+export function quitWarning(pending: readonly { title: string }[]): string | null {
+  if (!pending.length) return null;
+  const titles = pending.map((p) => p.title.trim() || t('untitled')).slice(0, 3).join(', ') + (pending.length > 3 ? ', …' : '');
+  return pending.length === 1
+    ? t('A market is still being created (%1). If you quit now it resumes the next time you open Hivemind.', titles)
+    : t('%1 markets are still being created (%2). If you quit now they resume the next time you open Hivemind.', String(pending.length), titles);
+}
+
 onRefresh(advanceCreation);
+// Said to the host whenever the journal changes, and again while it holds.
+$effect.root(() => {
+  $effect(() => setQuitGuard(quitWarning(hm.journal.pending)));
+});
