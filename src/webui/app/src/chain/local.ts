@@ -41,8 +41,8 @@ export interface LocalPage {
 }
 
 export const LOCAL_PAGES = [
-  { id: 'markets', title: 'Markets', simpleTitle: 'Questions', icon: 'market', section: 'chain', summary: 'Browse the prediction markets and trade in them', keywords: 'hivemind predict trade buy sell shares odds', quick: { label: 'Trade', icon: 'market', simpleLabel: 'Bet on a question' } },
-  { id: 'portfolio', title: 'Portfolio', simpleTitle: 'My bets', icon: 'portfolio', section: 'chain', summary: 'Your shares, what they are worth and what they made', wallet: true, keywords: 'positions profit loss pnl shares' },
+  { id: 'markets', title: 'Markets', simpleTitle: 'Questions', simple: true, simpleSummary: 'Bet on what will happen', icon: 'market', section: 'chain', summary: 'Browse the prediction markets and trade in them', keywords: 'hivemind predict trade buy sell shares odds', quick: { label: 'Trade', icon: 'market', simpleLabel: 'Bet on a question' } },
+  { id: 'portfolio', title: 'Portfolio', simpleTitle: 'My bets', simple: true, simpleSummary: 'Your bets and what they are worth', icon: 'portfolio', section: 'chain', summary: 'Your shares, what they are worth and what they made', wallet: true, keywords: 'positions profit loss pnl shares' },
   { id: 'voting', title: 'Voting center', icon: 'ballot', section: 'chain', summary: 'Seal and reveal your votes on the decisions', wallet: true, keywords: 'vote seal reveal ballot reputation', quick: { label: 'Vote', icon: 'ballot' }, advanced: true },
   { id: 'decisions', title: 'Decisions', icon: 'decision', section: 'chain', summary: 'The questions the markets are about, and the calendar of the periods', keywords: 'questions periods calendar', advanced: true },
   { id: 'create', title: 'Create', icon: 'create', section: 'chain', summary: 'List a decision and open a market on it', wallet: true, keywords: 'new market decision list open wizard', quick: { label: 'Create a market', icon: 'create', tab: 'market' }, advanced: true },
