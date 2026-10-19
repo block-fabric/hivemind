@@ -7,7 +7,7 @@
   "uriScheme": "hivemind",
   "brand": {
     "color": "#f5b83d",
-    "iconHue": 12,
+    "iconHue": 0,
     "mark": ["M16 3.5l10.8 6.25v12.5L16 28.5 5.2 22.25V9.75z", "M10.5 19.5l3.8-3.8 2.9 2.9 4.3-5.1", "M21.5 13.5v3"]
   },
   "networks": {
