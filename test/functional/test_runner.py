@@ -182,6 +182,7 @@ BASE_SCRIPTS = [
     'feature_sidechain_follower.py',
     'feature_sidechain_rules.py',
     'rpc_describeconfirmation.py',
+    'rpc_describeconfirmation_hivemind.py',
     'feature_sidechain_record.py',
     'feature_sidechain_mining_nofunds.py',
     'feature_drivechain_rebuild.py',
